@@ -3596,6 +3596,24 @@ class MusicBot(discord.Client):
             delete_after=20,
         )
 
+    async def cmd_ping(self):
+        """
+        Usage:
+            {command_prefix}ping
+            
+        Shows the latency between the bot and discord.
+        """
+        e = self._gen_embed()
+        e.title = "Ping"
+        e.add_field(name="Latency between bot and Discord", value=round(self.latency * 1000, 2), inline=False)
+        if 0 <= round(self.latency * 1000, 2) < 25:
+            e.colour = discord.Colour.green()
+        elif 25 <= round(self.latency * 1000, 2) < 40:
+            e.colour = discord.Colour.yellow()
+        elif round(self.latency * 1000, 2) > 40:
+            e.colour = discord.Colour.red()
+        return Response(e, delete_after=45)
+
     async def cmd_remove(
         self,
         user_mentions: List[discord.Member],

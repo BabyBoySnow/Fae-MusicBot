@@ -1,4 +1,5 @@
 import re
+import os
 import sys
 import glob
 import pathlib
@@ -34,6 +35,15 @@ if TYPE_CHECKING:
     from .bot import MusicBot
 
 log = logging.getLogger(__name__)
+
+#Handle log creation in event where we don't have a logs folder. 
+def create_log_dir():
+    logs_dir = "logs"
+    if not os.path.exists(logs_dir):
+        print("[INFO] LAUNCHER: Logs folder not found, creating.") #I can't do log.info so this is the closest
+        os.mkdir(logs_dir)  
+
+create_log_dir()
 
 
 def _add_logger_level(levelname: str, level: int, *, func_name: str = "") -> None:
