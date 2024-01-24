@@ -500,7 +500,7 @@ def dev_only(func: Callable[..., Any]) -> Any:
 
 
 def is_empty_voice_channel(
-    voice_channel: Union["VoiceChannel", "StageChannel"],
+    voice_channel: Union["VoiceChannel", "StageChannel", None],
     *,
     exclude_me: bool = True,
     exclude_deaf: bool = True,
@@ -513,6 +513,9 @@ def is_empty_voice_channel(
     :param: `exclude_deaf`: Excludes members who are self-deaf or server-deaf.
     :param: `include_bots`: A list of bot IDs to include if they are present.
     """
+    if not voice_channel:
+        log.debug("Cannot count members when voice_channel is None.")
+        return True
 
     def _check(member: "Member") -> bool:
         if exclude_me and member == voice_channel.guild.me:
@@ -534,7 +537,7 @@ def is_empty_voice_channel(
 
 
 def count_members_in_voice(
-    voice_channel: "VoiceChannel",
+    voice_channel: Union["VoiceChannel", "StageChannel", None],
     include_only: Iterable[int] = [],
     include_bots: Iterable[int] = [],
     exclude_ids: Iterable[int] = [],
@@ -552,6 +555,10 @@ def count_members_in_voice(
     :param: exclude_me:  A switch to, by default, exclude the bot ClientUser.
     :param: exclude_deaf:  A switch to, by default, exclude members who are deaf.
     """
+    if not voice_channel:
+        log.debug("Cannot count members when voice_channel is None.")
+        return 0
+
     num_voice = 0
     log.noise(  # type: ignore[attr-defined]
         f"Channel Count Pre-Filter:  {len(voice_channel.members)}"
