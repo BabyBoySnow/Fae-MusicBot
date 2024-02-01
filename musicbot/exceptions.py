@@ -1,6 +1,5 @@
 import shutil
 import textwrap
-from typing import Optional
 from enum import Enum
 
 
@@ -61,6 +60,9 @@ class SpotifyError(MusicbotException):
 
 # The user doesn't have permission to use a command
 class PermissionsError(CommandError):
+    def __init__(self, msg: str, expire_in: int = 0) -> None:
+        super().__init__(msg, expire_in=expire_in)
+
     @property
     def message(self) -> str:
         return (
@@ -83,8 +85,9 @@ class HelpfulError(MusicbotException):
         self.solution = solution
         self.preface = preface
         self.footnote = footnote
-        self.expire_in = expire_in
         self._message_fmt = "\n{preface}\n{problem}\n\n{solution}\n\n{footnote}"
+
+        super().__init__(self.message_no_format, expire_in=expire_in)
 
     @property
     def message(self) -> str:
@@ -99,16 +102,17 @@ class HelpfulError(MusicbotException):
     def message_no_format(self) -> str:
         return self._message_fmt.format(
             preface=self.preface,
-            problem=self._pretty_wrap(self.issue, "  Problem:", width=0),
-            solution=self._pretty_wrap(self.solution, "  Solution:", width=0),
+            problem=self._pretty_wrap(self.issue, "  Problem:", width=-1),
+            solution=self._pretty_wrap(self.solution, "  Solution:", width=-1),
             footnote=self.footnote,
         )
 
     @staticmethod
-    def _pretty_wrap(text: str, pretext: str, *, width: Optional[int] = -1) -> str:
+    def _pretty_wrap(text: str, pretext: str, *, width: int = -1) -> str:
         if width is None:
             return "\n".join((pretext.strip(), text))
-        elif width == -1:
+
+        if width == -1:
             pretext = pretext.rstrip() + "\n"
             width = shutil.get_terminal_size().columns
 
