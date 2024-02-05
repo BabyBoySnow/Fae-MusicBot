@@ -12,7 +12,6 @@ import sys
 import time
 import traceback
 from collections import defaultdict
-from datetime import timedelta
 from io import BytesIO, StringIO
 from textwrap import dedent
 from typing import Any, DefaultDict, Dict, List, Optional, Set, Union
@@ -95,8 +94,6 @@ log = logging.getLogger(__name__)
 # TODO: fix perms command to send in channel if DM fails.
 # TODO: fix current blacklist to be more clear.
 # TODO: add a proper blacklist for song-related data, not just users.
-# TODO: review duration related code, make it less spamy if nothing else.
-# TODO: review timedelta usage to make sure time is formatted as desired. no MS, no empty hours.
 
 
 class MusicBot(discord.Client):
@@ -110,8 +107,7 @@ class MusicBot(discord.Client):
         load_opus_lib()
         try:
             sys.stdout.write(f"\x1b]2;MusicBot {BOTVERSION}\x07")
-        # TODO: what does this raise and when would it raise it?
-        except Exception:  # pylint: disable=broad-exception-caught
+        except (TypeError, OSError):
             log.warning(
                 "Failed to set terminal Title via escape sequences.", exc_info=True
             )
@@ -1170,7 +1166,7 @@ class MusicBot(discord.Client):
         await self._scheck_ensure_env()
 
         # TODO: Server permissions check
-        # TODO: pre-expand playlists in autoplaylist
+        # TODO: pre-expand playlists in autoplaylist?
 
         # config/permissions async validate?
         await self._scheck_configs()
@@ -1536,7 +1532,7 @@ class MusicBot(discord.Client):
                 log.error("Error in cleanup", exc_info=True)
 
             if self.exit_signal:
-                raise self.exit_signal  # pylint: disable=E0702
+                raise self.exit_signal
 
     async def logout(self) -> None:
         """
@@ -3080,7 +3076,7 @@ class MusicBot(discord.Client):
 
                 if (
                     permissions.max_song_length
-                    and info.duration > permissions.max_song_length
+                    and info.duration_td.seconds > permissions.max_song_length
                 ):
                     raise exceptions.PermissionsError(
                         self.str.get(
@@ -3392,9 +3388,7 @@ class MusicBot(discord.Client):
                     ).format(
                         entries.index(entry) + 1,
                         entry["title"],
-                        format_song_duration(
-                            str(entry.duration_td),
-                        ),
+                        format_song_duration(entry.duration_td),
                     )
                 )
             # This combines the formatted result strings into one list.
@@ -3559,10 +3553,9 @@ class MusicBot(discord.Client):
                 )
                 self.server_specific_data[guild.id]["last_np_msg"] = None
 
-            # TODO: Fix timedelta garbage with util function
-            song_progress = str(timedelta(seconds=player.progress))
+            song_progress = format_song_duration(player.progress)
             song_total = (
-                str(player.current_entry.duration_td)
+                format_song_duration(player.current_entry.duration_td)
                 if player.current_entry.duration is not None
                 else "(no duration data)"
             )
@@ -3836,24 +3829,6 @@ class MusicBot(discord.Client):
             ),
             delete_after=20,
         )
-
-    async def cmd_ping(self):
-        """
-        Usage:
-            {command_prefix}ping
-            
-        Shows the latency between the bot and discord.
-        """
-        e = self._gen_embed()
-        e.title = "Ping"
-        e.add_field(name="Latency between bot and Discord", value=round(self.latency * 1000, 2), inline=False)
-        if 0 <= round(self.latency * 1000, 2) < 25:
-            e.colour = discord.Colour.green()
-        elif 25 <= round(self.latency * 1000, 2) < 40:
-            e.colour = discord.Colour.yellow()
-        elif round(self.latency * 1000, 2) > 40:
-            e.colour = discord.Colour.red()
-        return Response(e, delete_after=45)
 
     async def cmd_remove(
         self,
@@ -4409,15 +4384,15 @@ class MusicBot(discord.Client):
         Prints the current song queue.
         """
 
+        # TODO: find a way to paginate the results herein.
         lines = []
         unlisted = 0
         andmoretext = f"* ... and {len(player.playlist.entries)} more*"
 
         if player.is_playing and player.current_entry:
-            # TODO: Fix timedelta garbage with util function
-            song_progress = str(timedelta(seconds=round(player.progress)))
+            song_progress = format_song_duration(player.progress)
             song_total = (
-                str(player.current_entry.duration_td)
+                format_song_duration(player.current_entry.duration_td)
                 if player.current_entry.duration is not None
                 else "(no duration data)"
             )
@@ -5779,7 +5754,6 @@ class MusicBot(discord.Client):
         https://discordpy.readthedocs.io/en/stable/api.html#discord.on_guild_update
         """
         log.info("Guild update for:  %s", before)
-
         diff = instance_diff(before, after)
         for attr, vals in diff.items():
             log.everythinng(  # type: ignore[attr-defined]
@@ -5806,7 +5780,6 @@ class MusicBot(discord.Client):
         https://discordpy.readthedocs.io/en/stable/api.html#discord.on_guild_channel_update
         """
         log.info("Channel update for:  %s", before)
-
         diff = instance_diff(before, after)
         for attr, vals in diff.items():
             log.everythinng(  # type: ignore[attr-defined]

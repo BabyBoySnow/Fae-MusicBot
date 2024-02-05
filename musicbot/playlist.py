@@ -435,12 +435,11 @@ class Playlist(EventEmitter, Serializable):
 
         :raises: musicbot.exceptions.InvalidDataError  if duration data cannot be calculated.
         """
-        # TODO: double check the way we deal with time again.  I've messed something up.
         if any(e.duration is None for e in islice(self.entries, position - 1)):
             raise InvalidDataError("no duration data")
 
         estimated_time = sum(
-            float(e.duration_td.seconds) for e in islice(self.entries, position - 1)
+            e.duration_td.total_seconds() for e in islice(self.entries, position - 1)
         )
 
         # When the player plays a song, it eats the first playlist item, so we just have to add the time back
