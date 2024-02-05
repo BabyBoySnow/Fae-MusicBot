@@ -1366,10 +1366,13 @@ class MusicBot(discord.Client):
             lfunc('Cannot delete message "%s", no permission', message.clean_content)
 
         except discord.NotFound:
-            lfunc(
-                'Cannot delete message "%s", message not found',
-                message.clean_content,
-            )
+            if message.clean_content is None:
+                pass
+            else:
+                lfunc(
+                    'Cannot delete message "%s", message not found',
+                    message.clean_content,
+                )
 
         except discord.HTTPException as e:
             if e.status == 429:
@@ -1958,7 +1961,7 @@ class MusicBot(discord.Client):
         else:
             log.info(
                 "Channel activity timer canceled for: %s in %s",
-                guild.me.voice.channel.name,
+                chname,
                 guild.name,
             )
         finally:
