@@ -2053,7 +2053,7 @@ class MusicBot(discord.Client):
             
         Displays the latency between the bot and discord. Relative to expected response time.
         """
-        e = self._gen_embed
+        e = self._gen_embed()
         e.title = "Ping"
         e.description = "Latency between bot and discord. Relative to expected response time."
         e.add_field(name="\U0001f3d3", value=round(self.latency * 1000, 2), inline=True)
