@@ -787,12 +787,12 @@ class MusicBot(discord.Client):
                 content.title = newmsg
 
         # send it in specified channel
-        self.server_specific_data[guild.id]["last_np_msg"] = (
-            await self.safe_send_message(
-                channel,
-                content if self.config.embeds else newmsg,
-                expire_in=30 if self.config.delete_nowplaying else 0,
-            )
+        self.server_specific_data[guild.id][
+            "last_np_msg"
+        ] = await self.safe_send_message(
+            channel,
+            content if self.config.embeds else newmsg,
+            expire_in=30 if self.config.delete_nowplaying else 0,
         )
 
         # TODO: Check channel voice state?
@@ -2045,12 +2045,12 @@ class MusicBot(discord.Client):
             self.str.get("cmd-resetplaylist-response", "\N{OK HAND SIGN}"),
             delete_after=15,
         )
-    
+
     async def cmd_ping(self):
         """
         Usage:
             {command_prefix}ping
-            
+
         Displays the latency between the bot and discord. Relative to expected response time.
         """
         e = self._gen_embed()
@@ -3653,10 +3653,10 @@ class MusicBot(discord.Client):
                 else:
                     log.warning("No thumbnail set for entry with url: %s", entry.url)
 
-            self.server_specific_data[guild.id]["last_np_msg"] = (
-                await self.safe_send_message(
-                    channel, content if self.config.embeds else np_text, expire_in=30
-                )
+            self.server_specific_data[guild.id][
+                "last_np_msg"
+            ] = await self.safe_send_message(
+                channel, content if self.config.embeds else np_text, expire_in=30
             )
             return None
 
