@@ -1851,17 +1851,17 @@ class MusicBot(discord.Client):
             )
             if self.config.leave_player_inactive_for:
                 log.info(
-                    f"    Timeout: {self.config.leave_player_inactive_for} seconds"
+                    "   Timeout: %s seconds", self.config.leave_player_inactive_for
                 )
             log.info(
-                "  Self Deafen: " + ["Disabled", "Enabled"][self.config.self_deafen]
+                "  Self Deafen: %s", ["Disabled", "Enabled"][self.config.self_deafen]
             )
             log.info(
                 "  Per-server command prefix: %s",
                 ["Disabled", "Enabled"][self.config.enable_options_per_guild],
             )
             log.info(
-                "  Search List: " + ["Disabled", "Enabled"][self.config.searchlist]
+                "  Search List: %s", ["Disabled", "Enabled"][self.config.searchlist]
             )
 
         print(flush=True)
@@ -2072,7 +2072,8 @@ class MusicBot(discord.Client):
         """
         e = self._gen_embed()
         e.title = "Ping"
-        e.description = "\U0001f3d3 {}".format(round(self.latency * 1000, 2))
+        latency = round(self.latency * 1000, 2)
+        e.description = f"\U0001f3d3 {latency}"
         if 0 <= round(self.latency * 1000, 2) < 25:
             e.colour = discord.Colour.green()
         elif 25 <= round(self.latency * 1000, 2) < 40:
