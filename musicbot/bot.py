@@ -2063,7 +2063,7 @@ class MusicBot(discord.Client):
             delete_after=15,
         )
 
-    async def cmd_ping(self):
+    async def cmd_ping(self) -> CommandResponse:
         """
         Usage:
             {command_prefix}ping
