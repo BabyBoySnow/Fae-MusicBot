@@ -166,11 +166,11 @@ class MusicBot(discord.Client):
             "availability_paused": False,
             "auto_paused": False,
             "inactive_player_timer": (
-                asyncio.Event(),
+                None,  # will be an asyncio.Event()
                 False,  # event state tracking.
             ),
             "inactive_vc_timer": (
-                asyncio.Event(),
+                None,  # also a asyncio.Event(),
                 False,
             ),  # The boolean is going show if the timeout is active or not
         }
@@ -580,6 +580,10 @@ class MusicBot(discord.Client):
 
             if self.config.leave_inactive_channel:
                 event, active = self.server_specific_data[guild.id]["inactive_vc_timer"]
+                # TODO: do server specific defaults properly!
+                if event is None:
+                    event = asyncio.Event()
+
                 if active and not event.is_set():
                     event.set()
 
@@ -1846,9 +1850,10 @@ class MusicBot(discord.Client):
                 "Disabled" if self.config.leave_player_inactive_for == 0 else "Enabled",
             )
             if self.config.leave_player_inactive_for:
-                log.info(
-                    "    Timeout: %d seconds", self.config.leave_player_inactive_for
-                )
+                log.info(f"    Timeout: {self.config.leave_player_inactive_for} seconds")
+            log.info(
+                "  Self Deafen: " + ["Disabled", "Enabled"][self.config.self_deafen]
+            )
             log.info(
                 "  Self Deafen: %s", ["Disabled", "Enabled"][self.config.self_deafen]
             )
@@ -1856,9 +1861,7 @@ class MusicBot(discord.Client):
                 "  Per-server command prefix: %s",
                 ["Disabled", "Enabled"][self.config.enable_options_per_guild],
             )
-            log.info(
-                "  Search List: %s", ["Disabled", "Enabled"][self.config.searchlist]
-            )
+            log.info("  Search List: " + ["Disabled", "Enabled"][self.config.searchlist])
 
         print(flush=True)
 
@@ -1932,6 +1935,10 @@ class MusicBot(discord.Client):
 
         event, active = self.server_specific_data[guild.id]["inactive_vc_timer"]
 
+        # TODO: do server specific defaults properly!
+        if event is None:
+            event = asyncio.Event()
+
         if active:
             log.debug("Channel activity already waiting in guild: %s", guild)
             return
@@ -1980,6 +1987,9 @@ class MusicBot(discord.Client):
         event, event_active = self.server_specific_data[guild.id][
             "inactive_player_timer"
         ]
+        # TODO: do server specific defaults properly!
+        if event is None:
+            event = asyncio.Event()
 
         if str(channel.id) in str(self.config.autojoin_channels):
             log.debug(
@@ -2032,6 +2042,9 @@ class MusicBot(discord.Client):
             return
         guild = player.voice_client.channel.guild
         event, active = self.server_specific_data[guild.id]["inactive_player_timer"]
+        # TODO: do server specific defaults properly!
+        if event is None:
+            event = asyncio.Event()
         if active and not event.is_set():
             event.set()
             log.debug("Player activity timer is being reset.")
@@ -5618,6 +5631,10 @@ class MusicBot(discord.Client):
         if self.config.leave_inactive_channel:
             guild = member.guild
             event, active = self.server_specific_data[guild.id]["inactive_vc_timer"]
+
+            # TODO: do server specific defaults properly!
+            if event is None:
+                event = asyncio.Event()
 
             if before.channel and self.user in before.channel.members:
                 if str(before.channel.id) in str(self.config.autojoin_channels):
