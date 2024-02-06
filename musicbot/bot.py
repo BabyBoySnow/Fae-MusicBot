@@ -791,12 +791,12 @@ class MusicBot(discord.Client):
                 content.title = newmsg
 
         # send it in specified channel
-        self.server_specific_data[guild.id][
-            "last_np_msg"
-        ] = await self.safe_send_message(
-            channel,
-            content if self.config.embeds else newmsg,
-            expire_in=30 if self.config.delete_nowplaying else 0,
+        self.server_specific_data[guild.id]["last_np_msg"] = (
+            await self.safe_send_message(
+                channel,
+                content if self.config.embeds else newmsg,
+                expire_in=30 if self.config.delete_nowplaying else 0,
+            )
         )
 
         # TODO: Check channel voice state?
@@ -1850,7 +1850,9 @@ class MusicBot(discord.Client):
                 "Disabled" if self.config.leave_player_inactive_for == 0 else "Enabled",
             )
             if self.config.leave_player_inactive_for:
-                log.info(f"    Timeout: {self.config.leave_player_inactive_for} seconds")
+                log.info(
+                    f"    Timeout: {self.config.leave_player_inactive_for} seconds"
+                )
             log.info(
                 "  Self Deafen: " + ["Disabled", "Enabled"][self.config.self_deafen]
             )
@@ -1861,7 +1863,9 @@ class MusicBot(discord.Client):
                 "  Per-server command prefix: %s",
                 ["Disabled", "Enabled"][self.config.enable_options_per_guild],
             )
-            log.info("  Search List: " + ["Disabled", "Enabled"][self.config.searchlist])
+            log.info(
+                "  Search List: " + ["Disabled", "Enabled"][self.config.searchlist]
+            )
 
         print(flush=True)
 
@@ -3669,10 +3673,10 @@ class MusicBot(discord.Client):
                 else:
                     log.warning("No thumbnail set for entry with url: %s", entry.url)
 
-            self.server_specific_data[guild.id][
-                "last_np_msg"
-            ] = await self.safe_send_message(
-                channel, content if self.config.embeds else np_text, expire_in=30
+            self.server_specific_data[guild.id]["last_np_msg"] = (
+                await self.safe_send_message(
+                    channel, content if self.config.embeds else np_text, expire_in=30
+                )
             )
             return None
 
