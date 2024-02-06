@@ -1857,9 +1857,6 @@ class MusicBot(discord.Client):
                 "  Self Deafen: " + ["Disabled", "Enabled"][self.config.self_deafen]
             )
             log.info(
-                "  Self Deafen: %s", ["Disabled", "Enabled"][self.config.self_deafen]
-            )
-            log.info(
                 "  Per-server command prefix: %s",
                 ["Disabled", "Enabled"][self.config.enable_options_per_guild],
             )
