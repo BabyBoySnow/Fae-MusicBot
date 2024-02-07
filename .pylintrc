@@ -1,3 +1,6 @@
+[MESSAGE CONTROL]
+disagle = W1203, W1201
+
 [MAIN]
 
 # Analyse import fallback blocks. This can be used to support both Python 2 and
