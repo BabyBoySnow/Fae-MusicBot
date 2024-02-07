@@ -1,5 +1,5 @@
 [flake8]
-ignore = E203, E501, W503, C901, W1203
+ignore = E203, E501, W503, C901
 
 # This would be ideal
 #ignore = E203, E501, W503
