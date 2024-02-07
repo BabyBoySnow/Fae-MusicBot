@@ -8,9 +8,4 @@ certifi
 pymediainfo  # included for coverage, could be removed later.
 
 objgraph
-flake8
-flake8-type-checking
-black
-isort[colors]
-mypy
-pylint
+ruff
