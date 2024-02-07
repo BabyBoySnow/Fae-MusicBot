@@ -1774,8 +1774,7 @@ class MusicBot(discord.Client):
             )
             if self.config.leave_inactive_channel:
                 log.info(
-                    "    Timeout: %s seconds",
-                    self.config.leave_inactive_channel_timeout,
+                    f"    Timeout: {self.config.leave_player_inactive_for} seconds"
                 )
             log.info(
                 "  Leave at song end/empty queue: %s",
