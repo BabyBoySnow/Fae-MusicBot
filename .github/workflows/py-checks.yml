@@ -21,4 +21,4 @@ jobs:
         pip install -r ./requirements.dev.txt
     - name: Check with ruff
       run: |
-        python -m ruff -- check .
+        python -m ruff -- check 
