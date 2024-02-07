@@ -295,7 +295,8 @@ class Serializer(json.JSONEncoder):
             if factory and issubclass(factory, Serializable):  # type: ignore[arg-type]
                 # log.debug("Deserializing %s object", factory)
                 return factory._deserialize(  # type: ignore[attr-defined]
-                    data["data"], **cls._get_vars(factory._deserialize)  # type: ignore[attr-defined]
+                    data["data"],
+                    **cls._get_vars(factory._deserialize),  # type: ignore[attr-defined]
                 )
 
         return data

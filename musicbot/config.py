@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 
 
 def get_all_keys(
-    conf: Union["ExtendedConfigParser", configparser.ConfigParser]
+    conf: Union["ExtendedConfigParser", configparser.ConfigParser],
 ) -> List[str]:
     """
     Gather all config keys for all sections of a ConfigParser into a list.
