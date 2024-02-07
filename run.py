@@ -32,6 +32,7 @@ from musicbot.utils import (
     shutdown_loggers,
 )
 
+# protect dependency import from stopping the launcher
 try:
     import aiohttp
 except ImportError:
@@ -42,11 +43,21 @@ log = logging.getLogger("musicbot.launcher")
 
 class GIT:
     @classmethod
-    def works(cls) -> bool:
-        """Checks for output from git --version to verify git can be run."""
+    def works(cls, raise_instead: bool = False) -> bool:
+        """
+        Checks for output from git --version to verify git can be run.
+
+        :param: raise_instead:  Return True on success but raise Runtime error otherwise.
+
+        :raises:  RuntimeError  if `raise_instead` is set True
+        """
         try:
             git_bin = shutil.which("git")
             if not git_bin:
+                if raise_instead:
+                    raise RuntimeError(
+                        "Cannot locate `git` executable in environment path."
+                    )
                 return False
             return bool(subprocess.check_output([git_bin, "--version"]))
         except (
@@ -55,14 +66,17 @@ class GIT:
             PermissionError,
             FileNotFoundError,
             subprocess.CalledProcessError,
-        ):
+        ) as e:
+            if raise_instead:
+                raise RuntimeError(
+                    f"Cannot execute `git` commands due to an error:  {str(e)}"
+                ) from e
             return False
 
     @classmethod
     def run_upgrade_pull(cls) -> None:
         """Runs `git pull` in the current working directory."""
-        if not cls.works():
-            raise RuntimeError("Cannot locate or run 'git' executable.")
+        cls.works(raise_instead=True)
 
         log.info("Attempting to upgrade with `git pull` on current path.")
         try:
@@ -131,45 +145,88 @@ class PIP:
     def works(cls) -> bool:
         """Checks for output from pip --version to verify pip can be run."""
         try:
-            return bool(cls.run_python_m(["--version"], check_output=True))
-        except (
-            OSError,
-            PermissionError,
-            FileNotFoundError,
-            subprocess.CalledProcessError,
-        ):
+            rcode = cls.run_python_m(["--version"])
+            if rcode == 0:
+                return True
+            return False
+        except subprocess.CalledProcessError:
+            log.exception("PIP failed while calling sub-process.")
+            return False
+        except PermissionError:
+            log.exception("PIP failed due to Permissions Error.")
+            return False
+        except FileNotFoundError:
+            log.exception(
+                "PIP failed due to missing Python executable?  (%s)",
+                sys.executable,
+            )
+            return False
+        except OSError:
+            log.exception("PIP failed due to OSError.")
             return False
 
     @classmethod
-    def run_upgrade_requirements(cls) -> None:
+    def run_upgrade_requirements(cls, get_output: bool = False) -> Union[str, int]:
         """
         Uses a subprocess call to run python using sys.executable.
-        Runs `pip install --upgrade -r ./requirements.txt`
+        Runs `pip install --no-warn-script-location --no-input -U -r ./requirements.txt`
+        This method attempts to catch all exceptions and ensure a return value.
+
+        :param: get_output:  Return the process output rather than its exit code.
+            If set True, and an exception is caught, this will return the string "[[ProcessException]]"
+            If set False and an exception is caught, this will return int -255
+
+        :returns:  process exit code, where 0 is assumed success.
         """
         if not cls.works():
             raise RuntimeError("Cannot locate or execute python -m pip")
 
         log.info(
-            "Attempting to upgrade with `pip install --upgrade -r requirements.txt` on current path."
+            "Attempting to upgrade with `pip install --upgrade -r requirements.txt` on current path..."
         )
         try:
             raw_data = cls.run_python_m(
-                ["install", "--upgrade", "-r", "requirements.txt"],
-                check_output=True,
+                [
+                    "install",
+                    "--no-warn-script-location",
+                    "--no-input",
+                    "-U",
+                    "-r",
+                    "requirements.txt",
+                ],
+                check_output=get_output,
             )
             if isinstance(raw_data, bytes):
                 pip_data = raw_data.decode("utf8").strip()
-                log.info("Result of pip upgrade:  %s", pip_data)
+                log.info("Result of pip upgrade:\n%s", pip_data)
+                if get_output:
+                    return pip_data
+
+            if isinstance(raw_data, int):
+                log.info("Result exit code from pip upgrade: %s", raw_data)
+                return raw_data
+
+            # if somehow raw_data is not int or bytes.
+            if get_output:
+                return "[[OutputTypeException]]"
+            return -255
         except (
-            OSError,
-            UnicodeError,
             PermissionError,
             FileNotFoundError,
+            OSError,
+            UnicodeError,
             subprocess.CalledProcessError,
         ):
             log.exception(
-                "Upgrade failed, you need to run `pip install --upgrade -r requirements.txt` manually."
+                "Upgrade failed to execute or we could not understand the output"
             )
+            log.warning(
+                "You may need to run `pip install --upgrade -r requirements.txt` manually."
+            )
+
+            if get_output:
+                return "[[ProcessException]]"
+            return -255
 
 
 def bugger_off(msg: str = "Press enter to continue . . .", code: int = 1) -> None:
@@ -313,7 +370,7 @@ def req_ensure_env() -> None:
         bugger_off()
 
     try:
-        # TODO: change these perhaps.  Assert is removed in bytecode.
+        # TODO: change these perhaps.  Assert is removed in byte-code.
         assert os.path.isdir("config"), 'folder "config" not found'
         assert os.path.isdir("musicbot"), 'folder "musicbot" not found'
         assert os.path.isfile(
@@ -458,6 +515,12 @@ def parse_cli_args() -> argparse.Namespace:
         f"(Default:  '{DEFAULT_LOGS_ROTATE_FORMAT.replace('%', '%%')}')",
     )
 
+    # TODO: maybe more arguments for other things:
+    # --check-updates   look for new tags or commits on branch, then exit.
+    # --apply-updates   basically run update.py from here I guess.
+    # --config-dir   force this directory for config data (all files)
+    # --config-file  load config from this file, but default for other configs.
+
     args = ap.parse_args()
 
     # Show version and exit.
@@ -579,7 +642,13 @@ async def main(
             if e.verify_code == 20:  # X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY
                 if use_certifi:
                     log.exception(
-                        "Could not get Issuer Cert even with certifi.  Try: pip install --upgrade certifi "
+                        "Could not get Issuer Certificate even with certifi!\n"
+                        "Try running:  %s -m pip install --upgrade certifi ",
+                        sys.executable,
+                    )
+                    log.warning(
+                        "To easily add a certificate to Windows trust store, \n"
+                        "you can open the failing site in Microsoft Edge or IE...\n"
                     )
                     break
 
@@ -590,19 +659,31 @@ async def main(
                 continue
 
         except SyntaxError:
-            log.exception("Syntax error (this is a bug, not your fault)")
+            if "-dirty" in BOTVERSION:
+                log.exception("Syntax error (version is dirty, did you edit the code?)")
+            else:
+                log.exception("Syntax error (this is a bug, not your fault)")
             break
 
         except ImportError:
-            # TODO: if error module is in pip or dpy requirements...
+            if not PIP.works():
+                log.critical(
+                    "MusicBot could not import dependency modules and we cannot run `pip` automatically!\n"
+                    "You will need to manually install `pip` package for your version of python.\n"
+                )
+                log.warning(
+                    "If you already installed `pip` but still get this error:\n"
+                    " - Check that you installed it for this python version: %s\n"
+                    " - Check installed packages are accessible to the user running MusicBot",
+                    sys.version.split(maxsplit=1)[0],
+                )
+                break
 
             if not tried_requirementstxt:
                 tried_requirementstxt = True
 
-                log.exception("Error starting bot")
-                log.info("Attempting to install dependencies...")
-
-                err = PIP.run_install("--upgrade -r requirements.txt")
+                log.exception("Error importing dependencies while starting bot.")
+                err = PIP.run_upgrade_requirements(get_output=True)
 
                 if err:  # TODO: add the specific error check back.
                     # The proper thing to do here is tell the user to fix
@@ -650,8 +731,13 @@ async def main(
             if (not m or not m.init_ok) and not use_certifi:
                 if any(sys.exc_info()):
                     # How to log this without redundant messages...
-                    print("There are some exceptions that may not have been handled...")
-                    traceback.print_exc()
+                    log.warning(
+                        "There are some exceptions that may not have been handled..."
+                    )
+                    log.debug(
+                        "Traceback output:\n%s",
+                        "".join(traceback.format_exc()),
+                    )
                 tryagain = False
 
             loops += 1
@@ -673,7 +759,7 @@ if __name__ == "__main__":
     # parse arguments before any logs, so --help does not make an empty log.
     cli_args = parse_cli_args()
 
-    # Log file creation is defered until this first write.
+    # Log file creation is deferred until this first write.
     log.info("Loading MusicBot version:  %s", BOTVERSION)
     log.info("Log opened:  %s", time.ctime())
 

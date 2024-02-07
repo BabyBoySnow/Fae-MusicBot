@@ -10,9 +10,13 @@ import unicodedata
 from functools import wraps
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Set, Tuple, Union
 
-# TODO:  remove all utils with module deps to their own utils file.
-import aiohttp
-import colorlog
+# protected imports to keep run.py from breaking on missing packages.
+try:
+    import colorlog
+
+    COLORLOG_LOADED = True
+except ImportError:
+    COLORLOG_LOADED = False
 
 from .constants import (
     DEFAULT_DISCORD_LOG_FILE,
@@ -25,7 +29,6 @@ from .exceptions import PermissionsError
 
 if TYPE_CHECKING:
     from discord import Member, StageChannel, VoiceChannel
-    from multidict import CIMultiDictProxy
 
     from .bot import MusicBot
 
@@ -124,36 +127,44 @@ def setup_loggers() -> None:
     )
     logger.addHandler(fhandler)
 
-    # Setup logging to console for musicbot.
+    # Setup logging to console for musicbot, handle missing colorlog gracefully.
     shandler = logging.StreamHandler(stream=sys.stdout)
-    sformatter = colorlog.LevelFormatter(
-        fmt={
-            "DEBUG": "{log_color}[{levelname}:{module}] {message}",
-            "INFO": "{log_color}{message}",
-            "WARNING": "{log_color}{levelname}: {message}",
-            "ERROR": "{log_color}[{levelname}:{module}] {message}",
-            "CRITICAL": "{log_color}[{levelname}:{module}] {message}",
-            "EVERYTHING": "{log_color}[{levelname}:{module}] {message}",
-            "NOISY": "{log_color}[{levelname}:{module}] {message}",
-            "VOICEDEBUG": "{log_color}[{levelname}:{module}][{relativeCreated:.9f}] {message}",
-            "FFMPEG": "{log_color}[{levelname}:{module}][{relativeCreated:.9f}] {message}",
-        },
-        log_colors={
-            "DEBUG": "cyan",
-            "INFO": "white",
-            "WARNING": "yellow",
-            "ERROR": "red",
-            "CRITICAL": "bold_red",
-            "EVERYTHING": "bold_cyan",
-            "NOISY": "bold_white",
-            "FFMPEG": "bold_purple",
-            "VOICEDEBUG": "purple",
-        },
-        style="{",
-        datefmt="",
-    )
+    if COLORLOG_LOADED:
+        sformatter = colorlog.LevelFormatter(
+            fmt={
+                "DEBUG": "{log_color}[{levelname}:{module}] {message}",
+                "INFO": "{log_color}{message}",
+                "WARNING": "{log_color}{levelname}: {message}",
+                "ERROR": "{log_color}[{levelname}:{module}] {message}",
+                "CRITICAL": "{log_color}[{levelname}:{module}] {message}",
+                "EVERYTHING": "{log_color}[{levelname}:{module}] {message}",
+                "NOISY": "{log_color}[{levelname}:{module}] {message}",
+                "VOICEDEBUG": "{log_color}[{levelname}:{module}][{relativeCreated:.9f}] {message}",
+                "FFMPEG": "{log_color}[{levelname}:{module}][{relativeCreated:.9f}] {message}",
+            },
+            log_colors={
+                "DEBUG": "cyan",
+                "INFO": "white",
+                "WARNING": "yellow",
+                "ERROR": "red",
+                "CRITICAL": "bold_red",
+                "EVERYTHING": "bold_cyan",
+                "NOISY": "bold_white",
+                "FFMPEG": "bold_purple",
+                "VOICEDEBUG": "purple",
+            },
+            style="{",
+            datefmt="",
+        )
+
+    # colorlog import must have failed.
+    else:
+        sformatter = logging.Formatter(  # type: ignore[assignment]
+            "[{name}] {levelname}: {message}",
+            style="{",
+        )
+
     shandler.setFormatter(sformatter)  # type: ignore[arg-type]
-    # shandler.setLevel(self.config.debug_level)
     logger.addHandler(shandler)
 
     # Setup logging for discord module.
@@ -421,29 +432,6 @@ def paginate(
         chunks.append(currentchunk)
 
     return chunks
-
-
-async def get_headers(  # pylint: disable=dangerous-default-value
-    session: aiohttp.ClientSession,
-    url: str,
-    *,
-    timeout: int = 5,
-    allow_redirects: bool = True,
-    req_headers: Dict[str, Any] = {},
-) -> Union["CIMultiDictProxy[str]", None]:
-    """
-    Uses given aiohttp `session` to make a HEAD request against given `url` to fetch headers only.
-    If `headerfield` is set, only the given header field is returned.
-
-    :param: timeout:  Set a different timeout for the HEAD request.
-    :param: allow_redirect:  Follow "Location" headers through, on by default.
-    :param: req_headers:  Set a collection of headers to send with the HEAD request.
-    """
-    req_timeout = aiohttp.ClientTimeout(total=timeout)
-    async with session.head(
-        url, timeout=req_timeout, allow_redirects=allow_redirects, headers=req_headers
-    ) as response:
-        return response.headers
 
 
 def instance_diff(obj1: Any, obj2: Any) -> Dict[str, Tuple[Any, Any]]:
