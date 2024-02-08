@@ -2537,7 +2537,6 @@ class MusicBot(discord.Client):
 
         player = _player if _player else None
         prefix = self.server_data[guild.id].command_prefix
-        currently_playing = player.current_entry
 
         # check if we're in a voice channel
         if player is None:
@@ -2550,6 +2549,8 @@ class MusicBot(discord.Client):
                 % prefix,
                 expire_in=30,
             )
+
+        currently_playing = player.current_entry  # after the guard for Nonetype.
 
         # unpause if needed
         if player.is_paused:
@@ -2572,6 +2573,8 @@ class MusicBot(discord.Client):
         if player.is_playing and currently_playing:
             player.playlist.entries.append(currently_playing)
             player.skip()
+
+        return None  # no response needed, shut up mypy
 
     async def cmd_playnext(
         self,
