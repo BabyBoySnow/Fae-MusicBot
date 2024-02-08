@@ -2543,7 +2543,7 @@ class MusicBot(discord.Client):
             return
 
         if player.is_paused:
-            await player.playlist.entries.appendleft(currently_playing)
+            player.playlist.entries.appendleft(currently_playing)
             
 
         await self._do_cmd_unpause_check(_player, channel)
