@@ -2538,11 +2538,8 @@ class MusicBot(discord.Client):
         player = _player if _player else None
         prefix = self.server_data[guild.id].command_prefix
         currently_playing = player.current_entry
-
-        if player is None:
-            return
         
-        if not player:
+        if player is None:
             raise exceptions.CommandError(
                 self.str.get(
                     "cmd-no-voice",
@@ -2554,11 +2551,12 @@ class MusicBot(discord.Client):
             )
 
         if player.is_paused:
-            player.skip()
-            player.playlist.entries.appendleft(currently_playing)
+            await self._do_cmd_unpause_check(_player, channel)
 
         if player.is_playing:
             player.skip()
+            if currently_playing:
+                player.playlist.entries.appendleft(currently_playing)
 
         return await self._cmd_play(
             message,
