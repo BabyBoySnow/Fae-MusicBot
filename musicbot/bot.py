@@ -2525,15 +2525,37 @@ class MusicBot(discord.Client):
         Usage:
             {command_prefix}playnow song_link
             {command_prefix}playnow text to search for
-            {command_prefix}playnext spotify_uri
+            {command_prefix}playnow spotify_uri
 
-        Skips the currently playing song and starts playing the requested song immediately. If a link is not provided, the first
-        result from a youtube search is chosen.
+        Adds a song to be played immediately  If a link is not provided, the first
+        result from a youtube search is added to the queue.
 
-        If enabled in the config, the bot will also support Spotify URIs, however it will the metadata (e.g song name and artist) to the find a YouTube
+        If enabled in the config, the bot will also support Spotify URIs, however
+        it will use the metadata (e.g song name and artist) to find a YouTube
         equivalent of the song. Streaming from Spotify is not possible.
         """
+
+        player = _player if _player else None
+        prefix = self.server_data[guild.id].command_prefix
+
+        if player.is_paused:
+            await player.entries.popleft()
+
         await self._do_cmd_unpause_check(_player, channel)
+
+        if not player:
+            raise exceptions.CommandError(
+                self.str.get(
+                    "cmd-no-voice",
+                    "The bot is not in a voice channel.  "
+                    "Use %ssummon to summon it to your voice channel.",
+                )
+                % prefix,
+                expire_in=30,
+            )
+
+        if player.is_playing:
+            player.skip()
 
         return await self._cmd_play(
             message,
@@ -2544,12 +2566,11 @@ class MusicBot(discord.Client):
             permissions,
             leftover_args,
             song_url,
-            head=False,
-            play_now=True,
+            head=True,
         )
 
-        await self.get_ready_future()
 
+        
     async def cmd_playnext(
         self,
         message: discord.Message,
@@ -2608,7 +2629,7 @@ class MusicBot(discord.Client):
         if not player:
             raise exceptions.CommandError(
                 self.str.get(
-                    "cmd-repeat-no-voice",
+                    "cmd-no-voice",
                     "The bot is not in a voice channel.  "
                     "Use %ssummon to summon it to your voice channel.",
                 )
@@ -2734,7 +2755,7 @@ class MusicBot(discord.Client):
             prefix = self.server_data[guild.id].command_prefix
             raise exceptions.CommandError(
                 self.str.get(
-                    "cmd-move-no-voice",
+                    "cmd-no-voice",
                     "The bot is not in a voice channel.  "
                     f"Use {prefix}summon to summon it to your voice channel.",
                 )
@@ -2878,7 +2899,6 @@ class MusicBot(discord.Client):
         head: bool,
         shuffle_entries: bool = False,
         ignore_video_id: str = "",
-        play_now: bool = False,
     ) -> CommandResponse:
         """
         This function handles actually playing any given URL or song subject.
@@ -3045,9 +3065,6 @@ class MusicBot(discord.Client):
 
                 if shuffle_entries:
                     random.shuffle(info["entries"])
-
-                if play_now:
-                    player.playlist.popleft()
 
                 # TODO: I can create an event emitter object instead, add event functions, and every play list might be asyncified
                 # Also have a "verify_entry" hook with the entry as an arg and returns the entry if its ok
