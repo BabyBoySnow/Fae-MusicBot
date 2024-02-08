@@ -2570,7 +2570,7 @@ class MusicBot(discord.Client):
     
         #add the currently playing song to the end of the queue then skip
         if player.is_playing and currently_playing:
-            player.playlist.entries.appendleft(currently_playing)
+            player.playlist.entries.append(currently_playing)
             player.skip()
 
         return None #no response needed
