@@ -2554,8 +2554,8 @@ class MusicBot(discord.Client):
             )
 
         if player.is_paused:
-            player.playlist.entries.appendleft(currently_playing)
             player.skip()
+            player.playlist.entries.appendleft(currently_playing)
 
         if player.is_playing:
             player.skip()
