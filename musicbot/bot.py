@@ -2513,7 +2513,7 @@ class MusicBot(discord.Client):
     async def cmd_playnow(
         self,
         message: discord.Message,
-        _player: MusicPlayer,
+        _player: Optional[MusicPlayer],
         channel: MessageableChannel,
         guild: discord.Guild,
         author: discord.Member,
@@ -2538,8 +2538,11 @@ class MusicBot(discord.Client):
         player = _player if _player else None
         prefix = self.server_data[guild.id].command_prefix
 
+        if player is None:
+            return
+
         if player.is_paused:
-            await player.entries.popleft()
+            await player.info["entries"].popright()
 
         await self._do_cmd_unpause_check(_player, channel)
 
