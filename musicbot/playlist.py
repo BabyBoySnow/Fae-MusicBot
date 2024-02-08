@@ -422,34 +422,46 @@ class Playlist(EventEmitter, Serializable):
             return self.entries[0]
         return None
 
-    async def estimate_time_until(
-        self, position: int, player: "MusicPlayer"
-    ) -> datetime.timedelta:
-        """
-        (very) Roughly estimates the time till the queue will reach given `position`.
 
-        :param: position:  The index in the queue to reach.
-        :param: player:  MusicPlayer instance this playlist should belong to.
+async def estimate_time_until(self, position: int, player: "MusicPlayer") -> str:
+    """
+    (very) Roughly estimates the time till the queue will reach given `position`.
 
-        :returns: A datetime.timedelta object with the estimated time.
+    :param: position:  The index in the queue to reach.
+    :param: player:  MusicPlayer instance this playlist should belong to.
 
-        :raises: musicbot.exceptions.InvalidDataError  if duration data cannot be calculated.
-        """
-        if any(e.duration is None for e in islice(self.entries, position - 1)):
-            raise InvalidDataError("no duration data")
+    :returns: A string with the estimated time rounded to the second decimal place.
 
-        estimated_time = sum(
-            e.duration_td.total_seconds() for e in islice(self.entries, position - 1)
-        )
+    :raises: musicbot.exceptions.InvalidDataError  if duration data cannot be calculated.
+    """
+    if any(e.duration is None for e in islice(self.entries, position - 1)):
+        raise InvalidDataError("no duration data")
 
-        # When the player plays a song, it eats the first playlist item, so we just have to add the time back
-        if not player.is_stopped and player.current_entry:
-            if player.current_entry.duration is None:  # duration can be 0
-                raise InvalidDataError("no duration data in current entry")
+    estimated_time = sum(
+        e.duration_td.total_seconds() for e in islice(self.entries, position - 1)
+    )
 
-            estimated_time += player.current_entry.duration - player.progress
+    # When the player plays a song, it eats the first playlist item, so we just have to add the time back
+    if not player.is_stopped and player.current_entry:
+        if player.current_entry.duration is None:  # duration can be 0
+            raise InvalidDataError("no duration data in current entry")
 
-        return datetime.timedelta(seconds=estimated_time)
+        estimated_time += player.current_entry.duration - player.progress
+
+    # Create timedelta object with rounded seconds
+    rounded_timedelta = datetime.timedelta(seconds=round(estimated_time, 2))
+
+    # Convert timedelta object to string with the desired format
+    time_string = str(rounded_timedelta)
+
+    # Splitting the string to separate hours, minutes, and seconds
+    hours, remainder = time_string.split(":")[0], ":".join(time_string.split(":")[1:])
+    minutes, seconds = remainder.split(":")[0], ":".join(remainder.split(":")[1:])
+
+    # Construct the string representation with rounded seconds
+    rounded_time_string = f"{hours}:{minutes}:{seconds[:5]}"  # Retaining only two decimal places for seconds
+
+    return rounded_time_string
 
     def count_for_user(self, user: "discord.abc.User") -> int:
         """Get a sum of entries added to the playlist by the given `user`"""
