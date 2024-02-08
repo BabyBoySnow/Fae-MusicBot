@@ -2541,14 +2541,7 @@ class MusicBot(discord.Client):
 
         if player is None:
             return
-
-        if player.is_paused:
-            player.playlist.entries.appendleft(currently_playing)
-            player.skip()
-            
-
-        await self._do_cmd_unpause_check(_player, channel)
-
+        
         if not player:
             raise exceptions.CommandError(
                 self.str.get(
@@ -2559,6 +2552,11 @@ class MusicBot(discord.Client):
                 % prefix,
                 expire_in=30,
             )
+
+        if player.is_paused:
+            player.playlist.entries.appendleft(currently_playing)
+            player.skip()
+            player.resume()
 
         if player.is_playing:
             player.skip()
