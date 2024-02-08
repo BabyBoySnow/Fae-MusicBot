@@ -2539,6 +2539,7 @@ class MusicBot(discord.Client):
         prefix = self.server_data[guild.id].command_prefix
         currently_playing = player.current_entry
         
+        #check if we're in a voice channel
         if player is None:
             raise exceptions.CommandError(
                 self.str.get(
@@ -2550,15 +2551,12 @@ class MusicBot(discord.Client):
                 expire_in=30,
             )
 
+        #unpause if needed
         if player.is_paused:
             await self._do_cmd_unpause_check(_player, channel)
 
-        if player.is_playing:
-            player.skip()
-            if currently_playing:
-                player.playlist.entries.appendleft(currently_playing)
-
-        return await self._cmd_play(
+        #queue the requested song to be played immediately
+        await self._cmd_play(
             message,
             _player,
             channel,
@@ -2569,6 +2567,13 @@ class MusicBot(discord.Client):
             song_url,
             head=True,
         )
+    
+        #add the currently playing song to the end of the queue then skip
+        if player.is_playing and currently_playing:
+            player.playlist.entries.appendleft(currently_playing)
+            player.skip()
+
+        return None #no response needed
 
     async def cmd_playnext(
         self,
