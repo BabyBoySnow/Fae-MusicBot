@@ -2513,7 +2513,7 @@ class MusicBot(discord.Client):
     async def cmd_playnow(
         self,
         message: discord.Message,
-        _player: Optional[MusicPlayer],
+        _player: MusicPlayer,
         channel: MessageableChannel,
         guild: discord.Guild,
         author: discord.Member,
