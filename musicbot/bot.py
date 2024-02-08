@@ -2569,8 +2569,6 @@ class MusicBot(discord.Client):
             head=True,
         )
 
-
-        
     async def cmd_playnext(
         self,
         message: discord.Message,
