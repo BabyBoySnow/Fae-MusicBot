@@ -2517,7 +2517,7 @@ class MusicBot(discord.Client):
         channel: MessageableChannel,
         guild: discord.Guild,
         author: discord.Member,
-        permission: PermissionGroup,
+        permissions: PermissionGroup,
         leftover_args: List[str],
         song_url: str,
     ) -> CommandResponse:
