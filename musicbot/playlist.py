@@ -454,10 +454,12 @@ class Playlist(EventEmitter, Serializable):
         time_string = str(rounded_timedelta)
 
         # Splitting the string to separate hours, minutes, and seconds
-        hours, remainder = time_string.split(":")[0], ":".join(
-            time_string.split(":")[1:]
+        hours, remainder = time_string.split(":", maxsplit=1)[0], ":".join(
+            time_string.split(":", maxsplit=1)[1:]
         )
-        minutes, seconds = remainder.split(":")[0], ":".join(remainder.split(":")[1:])
+        minutes, seconds = remainder.split(":", maxsplit=1)[0], ":".join(
+            remainder.split(":", maxsplit=1)[1:]
+        )
 
         # Construct the string representation with rounded seconds
         rounded_time_string = f"{hours}:{minutes}:{seconds[:5]}"  # Retaining only two decimal places for seconds
