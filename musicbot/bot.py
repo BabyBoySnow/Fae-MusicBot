@@ -28,6 +28,8 @@ from .constants import (
     EMOJI_CHECK_MARK_BUTTON,
     EMOJI_CROSS_MARK_BUTTON,
     EMOJI_IDLE_ICON,
+    EMOJI_NEXT_ICON,
+    EMOJI_PREV_ICON,
 )
 from .constants import VERSION as BOTVERSION
 from .constructs import GuildSpecificData, Response
@@ -89,8 +91,8 @@ CommandResponse = Union[Response, None]
 
 log = logging.getLogger(__name__)
 
-# TODO: fix listids command to send in channel if DM fails.
-# TODO: fix perms command to send in channel if DM fails.
+# X TODO: fix listids command to send in channel if DM fails.
+# X TODO: fix perms command to send in channel if DM fails.
 # TODO: fix current blacklist to be more clear.
 # TODO: add a proper blacklist for song-related data, not just users.
 
@@ -485,6 +487,8 @@ class MusicBot(discord.Client):
                 # append to the file to preserve its formatting.
                 with open(self.config.auto_playlist_file, "r+", encoding="utf8") as fh:
                     lines = fh.readlines()
+                    if not lines:
+                        lines.append("# MusicBot Auto Playlist\n")
                     if lines[-1].endswith("\n"):
                         lines.append(f"{song_url}\n")
                     else:
@@ -1210,6 +1214,7 @@ class MusicBot(discord.Client):
         expire_in = int(kwargs.pop("expire_in", 0))
         allow_none = kwargs.pop("allow_none", True)
         also_delete = kwargs.pop("also_delete", None)
+        fallback_channel = kwargs.pop("fallback_channel", None)
 
         msg = None
         retry_after = 0.0
@@ -1240,6 +1245,11 @@ class MusicBot(discord.Client):
                     "Message is over the message size limit (%s)",
                     DISCORD_MSG_CHAR_LIMIT,
                 )
+
+            # if `dest` is a user with strict privacy or a bot, direct message can fail.
+            elif e.code == 50007 and fallback_channel:
+                log.debug("DM failed, sending in fallback channel instead.")
+                await self.safe_send_message(fallback_channel, content, **kwargs)
 
             elif e.status == 429:
                 # Note:  `e.response` could be either type:  aiohttp.ClientResponse  OR  requests.Response
@@ -1831,6 +1841,7 @@ class MusicBot(discord.Client):
             text=self.config.footer_text, icon_url="https://i.imgur.com/gFHBoZA.png"
         )
 
+        # TODO: handle this part when EmbedResponse get handled.
         author_name = "MusicBot"
         avatar_url = None
         if self.user:
@@ -2830,7 +2841,6 @@ class MusicBot(discord.Client):
         associated playlist to be queued as well.
         """
         # TODO: maybe add config to auto yes or no and bypass this.
-        # TODO: this currently will queue the original video twice.
 
         async def _prompt_for_playing(
             prompt: str, next_url: str, ignore_vid: str = ""
@@ -2907,25 +2917,6 @@ class MusicBot(discord.Client):
     ) -> CommandResponse:
         """
         This function handles actually playing any given URL or song subject.
-
-        Tested against these URLs:
-        - https://www.youtube.com/watch?v=UBxIN7f1k30  # live stream that will be dead in the future.
-        - https://www.youtube.com/playlist?list=PLBcHt8htZXKVCzW_Mkn4NrByBxn53o3cA   # 1373 videos, 8+ hours each, coffee house jazz.
-        - https://www.youtube.com/playlist?list=PL80gRr4GwcsznLYH-G_FXnzkP5_cHl-KR
-        - https://www.youtube.com/watch?v=bm48ncbhU10&list=PL80gRr4GwcsznLYH-G_FXnzkP5_cHl-KR
-        - https://www.youtube.com/watch?v=bm48ncbhU10
-        - https://youtu.be/L5uV3gmOH9g
-        - https://open.spotify.com/playlist/37i9dQZF1DXaImRpG7HXqp
-        - https://open.spotify.com/track/0YupMLYOYz6lZDbN3kRt7A?si=5b0eeb51b04c4af9
-        - https://open.spotify.com/album/1y8Yw0NDcP2qxbZufIXt7u   # 1 item album
-        - https://open.spotify.com/album/5LbHbwejgZXRZAgzVAjkhj   # multi-item album
-        - https://soundcloud.com/neilcic/cabinet-man
-        - https://soundcloud.com/grweston/sets/mashups
-        - https://lemondemon.bandcamp.com/album/spirit-phone
-        - slippery people talking heads live 84
-        - ytsearch4:talking heads stop making sense
-        - https://cdn.discordapp.com/attachments/741945274901200897/875075008723046410/cheesed.mp4
-        - https://playerservices.streamtheworld.com/api/livestream-redirect/KUPDFM.mp3?dist=hubbard&source=hubbard-web&ttag=web&gdpr=0
 
         """
         player = _player if _player else None
@@ -4416,20 +4407,53 @@ class MusicBot(discord.Client):
         return None
 
     async def cmd_queue(
-        self, guild: discord.Guild, player: MusicPlayer
+        self,
+        guild: discord.Guild,
+        channel: MessageableChannel,
+        player: MusicPlayer,
+        page: str = "0",
+        update_msg: Optional[discord.Message] = None,
     ) -> CommandResponse:
         """
         Usage:
-            {command_prefix}queue
+            {command_prefix}queue [page_number]
 
         Prints the current song queue.
+        Show later entries if available by giving optional page number.
         """
 
-        # TODO: find a way to paginate the results herein.
-        lines = []
-        unlisted = 0
-        andmoretext = f"* ... and {len(player.playlist.entries)} more*"
+        # handle the page argument.
+        page_number = 0
+        if page:
+            try:
+                page_number = abs(int(page))
+            except (ValueError, TypeError) as e:
+                raise exceptions.CommandError(
+                    "Queue page argument must be a whole number.",
+                    expire_in=30,
+                ) from e
 
+        # check for no entries at all.
+        total_entry_count = len(player.playlist.entries)
+        if not total_entry_count:
+            raise exceptions.CommandError(
+                self.str.get(
+                    "cmd-queue-none",
+                    "There are no songs queued! Queue something with {}play.",
+                ).format(self.server_data[guild.id].command_prefix)
+            )
+
+        # now check if page number is out of bounds.
+        limit_per_page = 10  # TODO: make this configurable, up to 25 fields per embed.
+        pages_total = math.ceil(total_entry_count / limit_per_page)
+        if page_number > pages_total:
+            raise exceptions.CommandError(
+                "Requested page number is out of bounds.\n"
+                f"There are **{pages_total}** pages."
+            )
+
+        # Get current entry info if any.
+        current_progress = ""
         if player.is_playing and player.current_entry:
             song_progress = format_song_duration(player.progress)
             song_total = (
@@ -4439,65 +4463,117 @@ class MusicBot(discord.Client):
             )
             prog_str = f"`[{song_progress}/{song_total}]`"
 
-            if player.current_entry.meta.get(
-                "channel", False
-            ) and player.current_entry.meta.get("author", False):
-                lines.append(
-                    self.str.get(
-                        "cmd-queue-playing-author",
-                        "Currently playing: `{0}` added by `{1}` {2}\n",
-                    ).format(
-                        player.current_entry.title,
-                        player.current_entry.meta["author"].name,
-                        prog_str,
-                    )
+            # TODO: Honestly the meta info could use a typed interface too.
+            cur_entry_channel = player.current_entry.meta.get("channel", None)
+            cur_entry_author = player.current_entry.meta.get("author", None)
+            if cur_entry_channel and cur_entry_author:
+                current_progress = self.str.get(
+                    "cmd-queue-playing-author",
+                    "Currently playing: `{0}`\nAdded by: `{1}`\nProgress: {2}\n",
+                ).format(
+                    player.current_entry.title,
+                    cur_entry_author.name,
+                    prog_str,
+                )
+
+            else:
+                current_progress = self.str.get(
+                    "cmd-queue-playing-noauthor",
+                    "Currently playing: `{0}`\nProgress: {1}\n",
+                ).format(player.current_entry.title, prog_str)
+
+        # calculate start and stop slice indices
+        start_index = limit_per_page * page_number
+        end_index = start_index + limit_per_page
+
+        # create an embed
+        starting_at = start_index + 1  # add 1 to index for display.
+        embed = self._gen_embed()
+        embed.title = "Songs in queue"
+        embed.description = (
+            f"{current_progress}There are `{total_entry_count}` entries in the queue.\n"
+            f"Here are the next {limit_per_page} songs, starting at song #{starting_at}"
+        )
+
+        # add the tracks to the embed fields
+        queue_segment = list(player.playlist.entries)[start_index:end_index]
+        for idx, item in enumerate(queue_segment, starting_at):
+            if item == player.current_entry:
+                # TODO: remove this debug later
+                log.debug("Skipped the current playlist entry.")
+                continue
+
+            item_channel = item.meta.get("channel", None)
+            item_author = item.meta.get("author", None)
+            if item_channel and item_author:
+                embed.add_field(
+                    name=f"Entry #{idx}",
+                    value=f"Title: `{item.title}`\nAdded by: `{item_author.name}`",
+                    inline=False,
                 )
             else:
-                lines.append(
-                    self.str.get(
-                        "cmd-queue-playing-noauthor", "Currently playing: `{0}` {1}\n"
-                    ).format(player.current_entry.title, prog_str)
+                embed.add_field(
+                    name=f"Entry #{idx}",
+                    value=f"Title: `{item.title}`",
+                    inline=False,
                 )
 
-        for i, item in enumerate(player.playlist, 1):
-            if item.meta.get("channel", False) and item.meta.get("author", False):
-                nextline = (
-                    self.str.get("cmd-queue-entry-author", "{0} -- `{1}` by `{2}`")
-                    .format(i, item.title, item.meta["author"].name)
-                    .strip()
-                )
+        # handle sending or editing the queue message.
+        if update_msg:
+            q_msg = await self.safe_edit_message(update_msg, embed, send_if_fail=True)
+        else:
+            if pages_total <= 1:
+                q_msg = await self.safe_send_message(channel, embed, expire_in=30)
             else:
-                nextline = (
-                    self.str.get("cmd-queue-entry-noauthor", "{0} -- `{1}`")
-                    .format(i, item.title)
-                    .strip()
-                )
+                q_msg = await self.safe_send_message(channel, embed)
 
-            currentlinesum = sum(len(x) + 1 for x in lines)  # +1 is for newline char
+        if pages_total <= 1:
+            log.debug("Not enough entries to paginate the queue.")
+            return None
 
-            if (
-                currentlinesum + len(nextline) + len(andmoretext)
-                > DISCORD_MSG_CHAR_LIMIT
-            ) or (i > self.config.queue_length):
-                if currentlinesum + len(andmoretext):
-                    unlisted += 1
-                    continue
-
-            lines.append(nextline)
-
-        if unlisted:
-            lines.append(self.str.get("cmd-queue-more", "\n... and %s more") % unlisted)
-
-        if not lines:
-            lines.append(
-                self.str.get(
-                    "cmd-queue-none",
-                    "There are no songs queued! Queue something with {}play.",
-                ).format(self.server_data[guild.id].command_prefix)
+        if not q_msg:
+            log.warning("Could not post queue message, no message to add reactions to.")
+            raise exceptions.CommandError(
+                "Try that again. MusicBot couldn't make or get a reference to the queue message.  If the issue persists, file a bug report."
             )
 
-        message = "\n".join(lines)
-        return Response(message, delete_after=30)
+        # set up the page numbers to be used by reactions.
+        # this essentially make the pages wrap around.
+        prev_index = page_number - 1
+        next_index = page_number + 1
+        if prev_index < 0:
+            prev_index = pages_total
+        if next_index > pages_total:
+            next_index = 0
+
+        for r in [EMOJI_PREV_ICON, EMOJI_NEXT_ICON, EMOJI_CROSS_MARK_BUTTON]:
+            await q_msg.add_reaction(r)
+
+        def _check_react(reaction: discord.Reaction, user: discord.Member) -> bool:
+            # Do not check for the requesting author, any reaction is valid.
+            if not self.user:
+                return False
+            return q_msg.id == reaction.message.id and user.id != self.user.id
+
+        try:
+            reaction, _user = await self.wait_for(
+                "reaction_add", timeout=60, check=_check_react
+            )
+            if reaction.emoji == EMOJI_NEXT_ICON:
+                await q_msg.clear_reactions()
+                await self.cmd_queue(guild, channel, player, str(next_index), q_msg)
+
+            if reaction.emoji == EMOJI_PREV_ICON:
+                await q_msg.clear_reactions()
+                await self.cmd_queue(guild, channel, player, str(prev_index), q_msg)
+
+            if reaction.emoji == EMOJI_CROSS_MARK_BUTTON:
+                await self.safe_delete_message(q_msg)
+
+        except asyncio.TimeoutError:
+            await self.safe_delete_message(q_msg)
+
+        return None
 
     async def cmd_clean(
         self,
@@ -4613,6 +4689,7 @@ class MusicBot(discord.Client):
             safe_title = slugify(info.title)
             filename = f"playlist_{safe_title}.txt"
 
+        # TODO: refactor this in favor of safe_send_message doing it all.
         with BytesIO() as fcontent:
             total = info.playlist_count or info.entry_count
             fcontent.write(f"# Title:  {info.title}\n".encode("utf8"))
@@ -4709,6 +4786,7 @@ class MusicBot(discord.Client):
             if rawudata:
                 data.extend(rawudata)
 
+        # TODO: refactor this in favor of safe_send_message doing it all.
         sent_to_channel = None
         with BytesIO() as sdata:
             slug = slugify(guild.name)
@@ -4735,6 +4813,7 @@ class MusicBot(discord.Client):
     async def cmd_perms(
         self,
         author: discord.Member,
+        channel: MessageableChannel,
         user_mentions: List[discord.Member],
         guild: discord.Guild,
         permissions: PermissionGroup,
@@ -4784,7 +4863,7 @@ class MusicBot(discord.Client):
             perm_data = permissions.__dict__[perm]
             lines.insert(len(lines) - 1, f"{perm}: {perm_data}")
 
-        await self.safe_send_message(author, "\n".join(lines))
+        await self.safe_send_message(author, "\n".join(lines), fallback_channel=channel)
         return Response("\N{OPEN MAILBOX WITH RAISED FLAG}", delete_after=20)
 
     @owner_only
