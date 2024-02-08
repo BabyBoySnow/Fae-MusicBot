@@ -2509,27 +2509,27 @@ class MusicBot(discord.Client):
             ),
             delete_after=30,
         )
-    
+
     async def cmd_playnow(
-            self,
-            message: discord.Message,
-            _player: Optional[MusicPlayer],
-            channel: MessageableChannel,
-            guild: discord.Guild,
-            author: discord.Member,
-            permission: PermissionGroup,
-            leftover_args: List[str],
-            song_url: str,
+        self,
+        message: discord.Message,
+        _player: Optional[MusicPlayer],
+        channel: MessageableChannel,
+        guild: discord.Guild,
+        author: discord.Member,
+        permission: PermissionGroup,
+        leftover_args: List[str],
+        song_url: str,
     ) -> CommandResponse:
         """
         Usage:
             {command_prefix}playnow song_link
             {command_prefix}playnow text to search for
             {command_prefix}playnext spotify_uri
-            
+
         Skips the currently playing song and starts playing the requested song immediately. If a link is not provided, the first
-        result from a youtube search is chosen. 
-        
+        result from a youtube search is chosen.
+
         If enabled in the config, the bot will also support Spotify URIs, however it will the metadata (e.g song name and artist) to the find a YouTube
         equivalent of the song. Streaming from Spotify is not possible.
         """
@@ -2547,8 +2547,8 @@ class MusicBot(discord.Client):
             head=False,
             play_now=True,
         )
-    
-        await  self.get_ready_future()
+
+        await self.get_ready_future()
 
     async def cmd_playnext(
         self,
@@ -3030,9 +3030,11 @@ class MusicBot(discord.Client):
             if "entries" in info and not info.entry_count:
                 if info.extractor == "youtube:search":
                     # TOOD: UI, i18n stuff
-                    raise exceptions.CommandError(self.str.get('cmd-play-no-results',
-                        f"Youtube search returned no results for:  {song_url}"
-                    )
+                    raise exceptions.CommandError(
+                        self.str.get(
+                            "cmd-play-no-results",
+                            f"Youtube search returned no results for:  {song_url}",
+                        )
                     )
 
             # If the result has usable entries, we assume it is a playlist
