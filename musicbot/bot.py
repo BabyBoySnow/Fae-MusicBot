@@ -2537,12 +2537,14 @@ class MusicBot(discord.Client):
 
         player = _player if _player else None
         prefix = self.server_data[guild.id].command_prefix
+        currently_playing = player.current_entry
 
         if player is None:
             return
 
         if player.is_paused:
-            await player.current_entry.popright()
+            await player.playlist.entries.appendright(currently_playing)
+            
 
         await self._do_cmd_unpause_check(_player, channel)
 
