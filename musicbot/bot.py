@@ -2544,6 +2544,7 @@ class MusicBot(discord.Client):
 
         if player.is_paused:
             player.playlist.entries.appendleft(currently_playing)
+            player.skip()
             
 
         await self._do_cmd_unpause_check(_player, channel)
