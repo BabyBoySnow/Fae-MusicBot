@@ -1316,7 +1316,7 @@ class MusicBot(discord.Client):
 
         except discord.NotFound:
             if message.clean_content is None:
-                pass
+                return
             else:
                 lfunc(
                     'Cannot delete message "%s", message not found',
