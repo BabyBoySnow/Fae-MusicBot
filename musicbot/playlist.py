@@ -322,24 +322,35 @@ class Playlist(EventEmitter, Serializable):
         Reorders the queue for round-robin
         """
         new_queue: Deque[EntryTypes] = deque()
-        all_authors: List["discord.User"] = []
+        authors_songs_map: Dict["discord.User", List[EntryTypes]] = {}
+
+        default_author = self.bot  # Assuming self.bot represents the default author
 
         for entry in self.entries:
             author = entry.meta.get("author", None)
-            if author and author not in all_authors:
-                all_authors.append(author)
+            if author:
+                if author not in authors_songs_map:
+                    authors_songs_map[author] = []
+                authors_songs_map[author].append(entry)
+            else:
+                if default_author not in authors_songs_map:
+                    authors_songs_map[default_author] = []
+                authors_songs_map[default_author].append(entry)
 
         request_counter = 0
-        while self.entries and all_authors:
-            author = all_authors[request_counter % len(all_authors)]
-            song = self.get_next_song_from_author(author)
+        while authors_songs_map:
+            authors = list(authors_songs_map.keys())
+            author = authors[request_counter % len(authors)]
+            songs = authors_songs_map[author]
 
-            if song is None:
-                all_authors.remove(author)
-                continue
+            if songs:
+                song = songs.pop(0)
+                new_queue.append(song)
+                self.entries.remove(song)
 
-            new_queue.append(song)
-            self.entries.remove(song)
+            if not songs:
+                del authors_songs_map[author]
+
             request_counter += 1
 
         self.entries = new_queue
