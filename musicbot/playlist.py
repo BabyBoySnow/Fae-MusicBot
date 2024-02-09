@@ -430,14 +430,16 @@ class Playlist(EventEmitter, Serializable):
             return self.entries[0]
         return None
 
-    async def estimate_time_until(self, position: int, player: "MusicPlayer") -> str:
+    async def estimate_time_until(
+        self, position: int, player: "MusicPlayer"
+    ) -> datetime.timedelta:
         """
         (very) Roughly estimates the time till the queue will reach given `position`.
 
         :param: position:  The index in the queue to reach.
         :param: player:  MusicPlayer instance this playlist should belong to.
 
-        :returns: A string with the estimated time rounded to the second decimal place.
+        :returns: A datetime.timedelta object with the estimated time.
 
         :raises: musicbot.exceptions.InvalidDataError  if duration data cannot be calculated.
         """
@@ -455,24 +457,7 @@ class Playlist(EventEmitter, Serializable):
 
             estimated_time += player.current_entry.duration - player.progress
 
-        # Create timedelta object with rounded seconds
-        rounded_timedelta = datetime.timedelta(seconds=round(estimated_time, 2))
-
-        # Convert timedelta object to string with the desired format
-        time_string = str(rounded_timedelta)
-
-        # Splitting the string to separate hours, minutes, and seconds
-        hours, remainder = time_string.split(":", maxsplit=1)[0], ":".join(
-            time_string.split(":", maxsplit=1)[1:]
-        )
-        minutes, seconds = remainder.split(":", maxsplit=1)[0], ":".join(
-            remainder.split(":", maxsplit=1)[1:]
-        )
-
-        # Construct the string representation with rounded seconds
-        rounded_time_string = f"{hours}:{minutes}:{seconds[:5]}"  # Retaining only two decimal places for seconds
-
-        return rounded_time_string
+        return datetime.timedelta(seconds=estimated_time)
 
     def count_for_user(self, user: "discord.abc.User") -> int:
         """Get a sum of entries added to the playlist by the given `user`"""
