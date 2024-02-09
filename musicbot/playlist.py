@@ -322,6 +322,7 @@ class Playlist(EventEmitter, Serializable):
         Reorders the queue for round-robin
         """
         new_queue: Deque[EntryTypes] = deque()
+        entries_without_authors: List[EntryTypes] = []
         all_authors: List["discord.User"] = []
 
         for entry in self.entries:
@@ -329,9 +330,9 @@ class Playlist(EventEmitter, Serializable):
             if author is not None and author not in all_authors:
                 all_authors.append(author)
             else:
-                new_queue.append(
+                entries_without_authors.append(
                     entry
-                )  # Append entries without author directly to new_queue
+                )  # Store entries without authors separately
 
         request_counter = 0
         while all_authors:
@@ -347,6 +348,9 @@ class Playlist(EventEmitter, Serializable):
 
             new_queue.append(song)
             request_counter += 1
+
+        # Incorporate entries without authors back into the queue
+        new_queue.extend(entries_without_authors)
 
         self.entries = new_queue
 
