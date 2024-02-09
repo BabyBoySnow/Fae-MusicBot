@@ -1,5 +1,1 @@
-{
-    "play": ["p"],
-    "skip": ["s"],
-    "queue": ["q"]
-}
+{"play": ["p"], "skip": ["s"], "queue": ["q"]}

@@ -347,7 +347,6 @@ class Playlist(EventEmitter, Serializable):
 
         self.entries = new_queue
 
-
     def _add_entry(
         self, entry: EntryTypes, *, head: bool = False, defer_serialize: bool = False
     ) -> None:
