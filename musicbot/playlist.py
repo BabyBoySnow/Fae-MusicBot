@@ -323,15 +323,14 @@ class Playlist(EventEmitter, Serializable):
         """
         new_queue: Deque[EntryTypes] = deque()
         all_authors: List["discord.User"] = []
+        auto_entry: List[EntryTypes] = []
 
         for entry in self.entries:
             author = entry.meta.get("author", None)
-            if author is not None and author not in all_authors:
+            if author is None:
+                auto_entry.append(entry)
+            elif author not in all_authors:
                 all_authors.append(author)
-            else:
-                new_queue.append(
-                    entry
-                )  # Append entries without author directly to new_queue
 
         request_counter = 0
         while all_authors:
@@ -346,13 +345,10 @@ class Playlist(EventEmitter, Serializable):
                 continue
 
             new_queue.append(song)
-
-            # Insert entries without authors back into the queue
-            while new_queue[0] in self.entries:
-                entry_without_author = new_queue.popleft()
-                new_queue.append(entry_without_author)
-
             request_counter += 1
+
+        # Insert entries without authors back into the queue
+        new_queue.extend(auto_entry)
 
         self.entries = new_queue
 
