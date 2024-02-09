@@ -1,3 +1,5 @@
+# Standard library imports
+import asyncio
 import datetime
 import logging
 from collections import deque
@@ -15,21 +17,17 @@ from typing import (
     Union,
 )
 
-# Standard library imports
-import asyncio
-
 # Third-party imports
 import discord
-
 from discord import User
 
 # Local application-specific imports
 from .bot import MusicBot
 from .constructs import Serializable
+from .downloader import YtdlpResponseDict
 from .entry import StreamPlaylistEntry, URLPlaylistEntry
 from .exceptions import ExtractionError, InvalidDataError, WrongEntryTypeError
 from .lib.event_emitter import EventEmitter
-from .downloader import YtdlpResponseDict
 from .player import MusicPlayer
 
 # type aliases
@@ -327,7 +325,7 @@ class Playlist(EventEmitter, Serializable):
         new_queue: Deque[EntryTypes] = deque()
         authors_songs_map: Dict["discord.User", List[EntryTypes]] = {}
 
-        default_author = self.user
+        default_author = self.user.name
 
         for entry in self.entries:
             author = entry.meta.get("author", None)
