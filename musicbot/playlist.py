@@ -16,7 +16,6 @@ from typing import (
 )
 
 import discord
-from discord import User
 
 from .constructs import Serializable
 from .entry import StreamPlaylistEntry, URLPlaylistEntry
