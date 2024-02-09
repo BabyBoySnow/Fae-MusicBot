@@ -91,8 +91,6 @@ CommandResponse = Union[Response, None]
 
 log = logging.getLogger(__name__)
 
-# X TODO: fix listids command to send in channel if DM fails.
-# X TODO: fix perms command to send in channel if DM fails.
 # TODO: fix current blacklist to be more clear.
 # TODO: add a proper blacklist for song-related data, not just users.
 
@@ -256,14 +254,16 @@ class MusicBot(discord.Client):
         :param: server:  The discord Guild in which to expect the member.
         :param: voice:  Require the owner to be in a voice channel.
         """
-        return discord.utils.find(
+        owner = discord.utils.find(
             lambda m: m.id == self.config.owner_id and (m.voice if voice else True),
             server.members if server else self.get_all_members(),
         )
+        log.noise(  # type: ignore[attr-defined]
+            "Looking for owner (voice:%s) and got:  %s", voice, owner
+        )
+        return owner
 
-    async def _join_startup_channels(
-        self, channels: Set[VoiceableChannel], *, autosummon: bool = True
-    ) -> None:
+    async def _join_startup_channels(self, channels: Set[VoiceableChannel]) -> None:
         """
         Attempt to join voice channels that have been configured in options.
         Also checks for existing voice sessions and attempts to resume
@@ -284,7 +284,7 @@ class MusicBot(discord.Client):
                 )
                 channel_map[guild] = guild.me.voice.channel
 
-            if autosummon:
+            if self.config.auto_summon:
                 owner = self._get_owner(server=guild, voice=True)
                 if owner and owner.voice and owner.voice.channel:
                     log.info('Found owner in "%s"', owner.voice.channel.name)
@@ -357,15 +357,14 @@ class MusicBot(discord.Client):
                         channel.name,
                     )
 
-            if channel:
+            if channel and not isinstance(
+                channel, (discord.VoiceChannel, discord.StageChannel)
+            ):
                 log.warning(
-                    "Not joining %s/%s, that's a text channel.",
+                    "Not joining %s/%s, it isn't a supported voice channel.",
                     channel.guild.name,
                     channel.name,
                 )
-
-            else:
-                log.warning("Invalid channel thing: %s", channel)
 
     async def _wait_delete_msg(
         self, message: discord.Message, after: Union[int, float]
@@ -940,7 +939,11 @@ class MusicBot(discord.Client):
 
                 if info.has_entries:
                     await player.playlist.import_from_info(
-                        info, channel=None, author=None, head=False
+                        info,
+                        channel=None,
+                        author=None,
+                        head=False,
+                        is_autoplaylist=True,
                     )
 
                 # Do I check the initial conditions again?
@@ -948,9 +951,16 @@ class MusicBot(discord.Client):
 
                 try:
                     await player.playlist.add_entry_from_info(
-                        info, channel=None, author=None, head=False
+                        info,
+                        channel=None,
+                        author=None,
+                        head=False,
+                        is_autoplaylist=True,
                     )
-                except exceptions.ExtractionError as e:
+                except (
+                    exceptions.ExtractionError,
+                    exceptions.WrongEntryTypeError,
+                ) as e:
                     log.error(
                         "Error adding song from autoplaylist: %s",
                         str(e),
@@ -983,6 +993,18 @@ class MusicBot(discord.Client):
         Event called by MusicPlayer when an entry is added to the playlist.
         """
         log.debug("Running on_player_entry_added")
+        # if playing auto-playlist track and a user queues a track,
+        # if we're configured to do so, auto skip the apl track.
+        if (
+            player.current_entry
+            and player.current_entry.from_auto_playlist
+            and playlist.peek() == entry
+            and not entry.from_auto_playlist
+            # TODO:  and self.config.autoplaylist_autoskip
+        ):
+            player.skip()
+
+        # Only serialize the queue for user-added tracks, unless deferred
         if (
             entry.meta.get("author")
             and entry.meta.get("channel")
@@ -1815,9 +1837,7 @@ class MusicBot(discord.Client):
         # maybe option to leave the ownerid blank and generate a random command for the owner to use
         # wait_for_message is pretty neato
 
-        await self._join_startup_channels(
-            self.autojoin_channels, autosummon=self.config.auto_summon
-        )
+        await self._join_startup_channels(self.autojoin_channels)
 
         # we do this after the config stuff because it's a lot easier to notice here
         if self.config.missing_keys:
@@ -3142,7 +3162,7 @@ class MusicBot(discord.Client):
                     )
                     reply_text += self.str.get(
                         "cmd-play-eta", " - estimated time until playing: %s"
-                    ) % str(time_until)
+                    ) % f"`{format_song_duration(time_until)}`"
                 except exceptions.InvalidDataError:
                     reply_text += self.str.get(
                         "cmd-play-eta-error", " - cannot estimate time until playing"
