@@ -15,8 +15,6 @@ from typing import (
     Union,
 )
 
-import discord
-
 from .constructs import Serializable
 from .entry import StreamPlaylistEntry, URLPlaylistEntry
 from .exceptions import ExtractionError, InvalidDataError, WrongEntryTypeError
@@ -25,9 +23,12 @@ from .lib.event_emitter import EventEmitter
 if TYPE_CHECKING:
     import asyncio
 
+    import discord
+
     from .bot import MusicBot
     from .downloader import YtdlpResponseDict
     from .player import MusicPlayer
+
 # type aliases
 EntryTypes = Union[URLPlaylistEntry, StreamPlaylistEntry]
 
@@ -321,35 +322,27 @@ class Playlist(EventEmitter, Serializable):
         Reorders the queue for round-robin
         """
         new_queue: Deque[EntryTypes] = deque()
-        authors_songs_map: Dict["discord.User", List[EntryTypes]] = {}
-
-        default_author = self.bot.name
+        all_authors: List["discord.User"] = []
 
         for entry in self.entries:
             author = entry.meta.get("author", None)
-            if author:
-                if author not in authors_songs_map:
-                    authors_songs_map[author] = []
-                authors_songs_map[author].append(entry)
-            else:
-                if default_author not in authors_songs_map:
-                    authors_songs_map[default_author] = []
-                authors_songs_map[default_author].append(entry)
+            if author and author not in all_authors:
+                all_authors.append(author)
 
         request_counter = 0
-        while authors_songs_map:
-            authors = list(authors_songs_map.keys())
-            author = authors[request_counter % len(authors)]
-            songs = authors_songs_map[author]
+        song: Optional[EntryTypes] = None
+        while self.entries:
+            if request_counter == len(all_authors):
+                request_counter = 0
 
-            if songs:
-                song = songs.pop(0)
-                new_queue.append(song)
-                self.entries.remove(song)
+            song = self.get_next_song_from_author(all_authors[request_counter])
 
-            if not songs:
-                del authors_songs_map[author]
+            if song is None:
+                all_authors.pop(request_counter)
+                continue
 
+            new_queue.append(song)
+            self.entries.remove(song)
             request_counter += 1
 
         self.entries = new_queue
