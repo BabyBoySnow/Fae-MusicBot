@@ -317,7 +317,7 @@ class Playlist(EventEmitter, Serializable):
 
         return None
 
-    def reorder_for_round_robin(self, user: discord.User) -> None:
+    def reorder_for_round_robin(self) -> None:
         """
         Reorders the queue for round-robin
         """
