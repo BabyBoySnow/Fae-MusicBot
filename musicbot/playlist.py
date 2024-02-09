@@ -39,7 +39,7 @@ class Playlist(EventEmitter, Serializable):
     A playlist that manages the list of songs that will be played.
     """
 
-    def __init__(self, bot: "MusicBot") -> None:
+    def __init__(self, bot: "MusicBot", user: discord.User) -> None:
         """
         Manage a serializable, event-capable playlist of entries made up
         of validated extraction information.
@@ -48,6 +48,7 @@ class Playlist(EventEmitter, Serializable):
         self.bot: "MusicBot" = bot
         self.loop: "asyncio.AbstractEventLoop" = bot.loop
         self.entries: Deque[EntryTypes] = deque()
+        self.user = user
 
     def __iter__(self) -> Iterator[EntryTypes]:
         return iter(self.entries)
@@ -316,7 +317,7 @@ class Playlist(EventEmitter, Serializable):
 
         return None
 
-    def reorder_for_round_robin(self) -> None:
+    def reorder_for_round_robin(self, user: discord.User) -> None:
         """
         Reorders the queue for round-robin
         """
