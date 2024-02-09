@@ -433,6 +433,7 @@ disable=raw-checker-failed,
         use-implicit-booleaness-not-comparison-to-zero,
         
         pointless-string-statement,
+        logging-fstring-interpolation,
         trailing-whitespace,
         trailing-newlines,
         line-too-long,
