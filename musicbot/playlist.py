@@ -1,5 +1,3 @@
-# Standard library imports
-import asyncio
 import datetime
 import logging
 from collections import deque
@@ -17,20 +15,20 @@ from typing import (
     Union,
 )
 
-# Third-party imports
 import discord
-
 from discord import User
 
-# Local application-specific imports
-from .bot import MusicBot
 from .constructs import Serializable
-from .downloader import YtdlpResponseDict
 from .entry import StreamPlaylistEntry, URLPlaylistEntry
 from .exceptions import ExtractionError, InvalidDataError, WrongEntryTypeError
 from .lib.event_emitter import EventEmitter
-from .player import MusicPlayer
 
+if TYPE_CHECKING:
+    import asyncio
+
+    from .bot import MusicBot
+    from .downloader import YtdlpResponseDict
+    from .player import MusicPlayer
 # type aliases
 EntryTypes = Union[URLPlaylistEntry, StreamPlaylistEntry]
 
