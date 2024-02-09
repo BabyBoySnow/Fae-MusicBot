@@ -1,0 +1,20 @@
+    [tool.black]
+    py311 = true
+    include = '\.pyi?$'
+    exclude = '''
+    /(
+        \.git
+      | \.hg
+      | \.mypy_cache
+      | \.gitignore
+      | \.tox
+      | \.venv
+      | _build
+      | buck-out
+      | build
+      | dist
+
+      # The following are specific to Black, you probably don't want those.
+      | blib2to3
+      | tests/data
+    )/'''
