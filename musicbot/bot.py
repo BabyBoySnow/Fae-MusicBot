@@ -984,7 +984,7 @@ class MusicBot(discord.Client):
     async def on_player_entry_added(
         self,
         player: MusicPlayer,
-        playlist: Playlist,  # pylint: disable=unused-argument
+        playlist: Playlist,  
         entry: EntryTypes,
         defer_serialize: bool = False,
         **_: Any,
