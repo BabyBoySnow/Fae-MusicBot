@@ -19,6 +19,7 @@ from typing import (
 
 # Third-party imports
 import discord
+
 from discord import User
 
 # Local application-specific imports
