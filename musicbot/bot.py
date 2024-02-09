@@ -3160,9 +3160,12 @@ class MusicBot(discord.Client):
                     time_until = await player.playlist.estimate_time_until(
                         position, player
                     )
-                    reply_text += self.str.get(
-                        "cmd-play-eta", " - estimated time until playing: %s"
-                    ) % f"`{format_song_duration(time_until)}`"
+                    reply_text += (
+                        self.str.get(
+                            "cmd-play-eta", " - estimated time until playing: %s"
+                        )
+                        % f"`{format_song_duration(time_until)}`"
+                    )
                 except exceptions.InvalidDataError:
                     reply_text += self.str.get(
                         "cmd-play-eta-error", " - cannot estimate time until playing"
