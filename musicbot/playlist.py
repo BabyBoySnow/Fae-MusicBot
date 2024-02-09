@@ -343,7 +343,9 @@ class Playlist(EventEmitter, Serializable):
 
             new_queue.append(song)
             self.entries.remove(song)
-            request_counter = (request_counter + 1) % len(all_authors)  # Reset counter if it exceeds length
+            request_counter = (request_counter + 1) % len(
+                all_authors
+            )  # Reset counter if it exceeds length
 
         self.entries = new_queue
 
