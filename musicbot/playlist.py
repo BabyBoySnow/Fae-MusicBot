@@ -330,22 +330,17 @@ class Playlist(EventEmitter, Serializable):
                 all_authors.append(author)
 
         request_counter = 0
-        song: Optional[EntryTypes] = None
-        while self.entries:
-            if request_counter == len(all_authors):
-                request_counter = 0
-
-            song = self.get_next_song_from_author(all_authors[request_counter])
+        while self.entries and all_authors:
+            author = all_authors[request_counter % len(all_authors)]
+            song = self.get_next_song_from_author(author)
 
             if song is None:
-                all_authors.pop(request_counter)
+                all_authors.remove(author)
                 continue
 
             new_queue.append(song)
             self.entries.remove(song)
-            request_counter = (request_counter + 1) % len(
-                all_authors
-            )  # Reset counter if it exceeds length
+            request_counter += 1
 
         self.entries = new_queue
 
