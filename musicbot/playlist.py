@@ -25,6 +25,8 @@ if TYPE_CHECKING:
 
     import discord
 
+    from discord import User
+
     from .bot import MusicBot
     from .downloader import YtdlpResponseDict
     from .player import MusicPlayer
@@ -324,7 +326,7 @@ class Playlist(EventEmitter, Serializable):
         new_queue: Deque[EntryTypes] = deque()
         authors_songs_map: Dict["discord.User", List[EntryTypes]] = {}
 
-        default_author = self.bot  # Assuming self.bot represents the default author
+        default_author = self.user
 
         for entry in self.entries:
             author = entry.meta.get("author", None)
