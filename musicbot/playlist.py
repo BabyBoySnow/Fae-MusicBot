@@ -331,7 +331,7 @@ class Playlist(EventEmitter, Serializable):
 
         request_counter = 0
         song: Optional[EntryTypes] = None
-        while self.entries and all_authors:  # Ensure both lists are not empty
+        while self.entries:
             if request_counter == len(all_authors):
                 request_counter = 0
 
