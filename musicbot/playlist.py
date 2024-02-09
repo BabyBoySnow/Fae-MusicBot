@@ -331,7 +331,7 @@ class Playlist(EventEmitter, Serializable):
 
         request_counter = 0
         song: Optional[EntryTypes] = None
-        while self.entries:
+        while self.entries and all_authors:  # Ensure both lists are not empty
             if request_counter == len(all_authors):
                 request_counter = 0
 
@@ -346,6 +346,7 @@ class Playlist(EventEmitter, Serializable):
             request_counter += 1
 
         self.entries = new_queue
+
 
     def _add_entry(
         self, entry: EntryTypes, *, head: bool = False, defer_serialize: bool = False
