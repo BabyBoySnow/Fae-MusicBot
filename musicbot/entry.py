@@ -7,7 +7,7 @@ import shutil
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from discord.abc import GuildChannel
-from yt_dlp.utils import ContentTooShortError
+from yt_dlp.utils import ContentTooShortError  # type: ignore[import-untyped]
 
 from .constructs import Serializable
 from .downloader import YtdlpResponseDict
@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 
 # optionally using pymediainfo instead of ffprobe if presents
 try:
-    import pymediainfo
+    import pymediainfo  # type: ignore[import-untyped]
 except ImportError:
     log.debug("module 'pymediainfo' not found, will fall back to ffprobe.")
     pymediainfo = None

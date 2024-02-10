@@ -574,7 +574,7 @@ def respawn_bot_process(pybin: str = "") -> None:
         # The moment we end our existing instance, control is returned to the starting shell.
         with subprocess.Popen(
             exec_args,
-            creationflags=subprocess.CREATE_NEW_CONSOLE,
+            creationflags=subprocess.CREATE_NEW_CONSOLE,  # type: ignore[attr-defined]
         ):
             log.debug("Opened new MusicBot instance.  This terminal can now be closed!")
         sys.exit(0)

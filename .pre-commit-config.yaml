@@ -27,26 +27,8 @@ repos:
             "--rcfile=.pylintrc", # Link to your config file
           ]
 
-
   - repo: https://github.com/pycqa/isort
     rev: 5.13.2
     hooks:
       - id: isort
         args: ["--line-length", "88", "--profile", "black"]  # Keep line length consistent
-
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: 8cd2d40
-    hooks:
-      - id: mypy
-        additional_dependencies: 
-          - pynacl
-          - git+https://github.com/Rapptz/discord.py
-          - pip
-          - yt-dlp
-          - colorlog
-          - cffi
-          - certifi
-        args: 
-          - --strict
-          - --ignore-missing-imports
-          - --warn-unused-ignores
