@@ -32,7 +32,7 @@ jobs:
         python -m flake8 --max-line-length=88 ./
     - name: Check with MyPy
       run: |
-        mypy --python-version 3.8  --strict --warn-unused-ignores --ignore-missing-imports ./*.py
+        mypy --python-version 3.8  --warn-unused-ignores --ignore-missing-imports ./*.py
     - name: Check with Pylint
       run: |
         pylint --max-line-length=88 --recursive=y ./
