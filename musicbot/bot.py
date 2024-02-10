@@ -18,7 +18,7 @@ from typing import Any, DefaultDict, Dict, List, Optional, Set, Union
 import aiohttp
 import certifi  # type: ignore[import-untyped, unused-ignore]
 import discord
-import yt_dlp as youtube_dl  # type: ignore[import-untyped]
+import yt_dlp as youtube_dl
 
 from . import downloader, exceptions
 from .aliases import Aliases, AliasesDefault
@@ -59,7 +59,7 @@ from .utils import (
 
 # optional imports
 try:
-    import objgraph  # type: ignore[import-untyped]
+    import objgraph
 except ImportError:
     objgraph = None
 

@@ -12,12 +12,9 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import aiohttp
-import yt_dlp as youtube_dl  # type: ignore[import-untyped]
-from yt_dlp.networking.exceptions import (  # type: ignore[import-untyped]
-    NoSupportingHandlers,
-)
-from yt_dlp.utils import DownloadError  # type: ignore[import-untyped]
-from yt_dlp.utils import UnsupportedError
+import yt_dlp as youtube_dl
+from yt_dlp.networking.exceptions import NoSupportingHandlers
+from yt_dlp.utils import DownloadError, UnsupportedError
 
 from .exceptions import ExtractionError
 from .spotify import Spotify
