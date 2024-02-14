@@ -1,13 +1,13 @@
 repos:
   - repo: https://github.com/ambv/black
-    rev: stable
+    rev: 24.2.0
     hooks:
       - id: black
         language_version: python3.11
         args: ["--line-length", "88", "--target-version", "py38"]  # Keep line length consistent
 
   - repo: https://github.com/pycqa/flake8
-    rev: main
+    rev: 7.0.0
     hooks:
       - id: flake8
         files: .py  # Specify the files or directories to lint, '.' represents the current directory
@@ -28,7 +28,7 @@ repos:
           ]
 
   - repo: https://github.com/pycqa/isort
-    rev: main
+    rev: 5.13.2
     hooks:
       - id: isort
         args: ["--line-length", "88", "--profile", "black"]  # Keep line length consistent
