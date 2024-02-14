@@ -73,7 +73,9 @@ class GuildSpecificData:
         # Members for internal use only.
         self._ssd: DefaultDict[int, "GuildSpecificData"] = bot.server_data
         self._bot_config: "Config" = bot.config
+        self._bot: "MusicBot" = bot
         self._guild_id: int = 0
+        self._guild_name: str = ""
         self._command_prefix: str = ""
         self._prefix_history: Set[str] = set()
         self._events: DefaultDict[str, GuildAsyncEvent] = defaultdict(GuildAsyncEvent)
@@ -97,6 +99,12 @@ class GuildSpecificData:
         """
         for key, val in self._ssd.items():
             if val == self:
+                guild = discord.utils.find(
+                    lambda m: m.id == key,  # pylint: disable=cell-var-from-loop
+                    self._bot.guilds,
+                )
+                if guild:
+                    self._guild_name = guild.name
                 return key
         return 0
 
@@ -155,12 +163,16 @@ class GuildSpecificData:
 
         opt_file = pathlib.Path(f"data/{self._guild_id}/options.json")
         if not opt_file.is_file():
-            log.debug("No file for guild %s", self._guild_id)
+            log.debug("No file for guild %s/%s", self._guild_id, self._guild_name)
             return
 
         async with self._file_lock:
             try:
-                log.debug("Loading guild data for guild with ID:  %s", self._guild_id)
+                log.debug(
+                    "Loading guild data for guild with ID:  %s/%s",
+                    self._guild_id,
+                    self._guild_name,
+                )
                 options = Json(opt_file)
                 self._is_file_loaded = True
             except OSError:
@@ -170,10 +182,15 @@ class GuildSpecificData:
                 )
                 return
 
-        # TODO: find a good place to log this data with a guild name, as before.
         guild_prefix = options.get("command_prefix", None)
         if guild_prefix:
             self._command_prefix = guild_prefix
+            log.info(
+                "Guild %s/%s has custom command prefix: %s",
+                self._guild_id,
+                self._guild_name,
+                self._command_prefix,
+            )
 
     async def save_guild_options_file(self) -> None:
         """

@@ -35,6 +35,19 @@ Cherry-picking (or otherwise copying) is welcome should you feel inclined.
 Here is a list of changes made so far, with most recent first:
 
 
+- Adds logic to check for updates to MusicBot via git and for dependencies via pip.
+  - Adds new command `checkupdates` to print status about available updates.
+  - Adds new CLI flag `--no-update-check` to disable checking for updates on startup.
+  - Adds new CLI flag `--no-install-deps` to disable automatic install of dependencies when ImportError happens.
+- Improved security of subprocess command execution, to reduce command/shell injection risks.
+- Updates blocklist feature and adds block list for songs as well as users.
+  - Replaces old `blacklist` command with `blockuser` command.
+  - Adds new command `blocksong` which works similarly to `blockuser` command.
+  - Updates options.ini to replace or add block list options:
+    - Replaces `[Files] Blacklist` with `[Files] UserBlocklistFile` option.
+    - Adds `[Files] SongBlocklistFile` option.
+    - Adds `[MusicBot] EnableUserBlocklist` to toggle the features. Default enabled.
+    - Adds `[MusicBot] EnableSongBlocklist` to toggle the features. Default disabled.
 - Auto playlist tracks are auto-skipped when a user adds a new song.
 - Update the `queue` command to add pagination by both command arg and reactions.
 - Allow `listids` and `perms` commands to fall back to sending in public if DM fails.
@@ -87,3 +100,5 @@ Here is a list of changes made so far, with most recent first:
 - Improved audio cache management, settings to limit storage use and `cache` command to see info or manually clear it. **[merged]**  
 - Per-Server command prefix settings available via new `setprefix` command. Allows almost anything to be a prefix! **[merged]**  
 - Player inactivity timer options to auto-disconnect when the player is not playing for a set period of time. **[merged]**  
+
+:)

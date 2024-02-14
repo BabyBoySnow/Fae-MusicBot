@@ -1,11 +1,13 @@
 import asyncio
 import inspect
+import json
 import logging
 import math
 import os
 import pathlib
 import random
 import re
+import shutil
 import ssl
 import sys
 import time
@@ -54,7 +56,6 @@ from .utils import (
     mute_discord_console_log,
     owner_only,
     slugify,
-    write_file,
 )
 
 # optional imports
@@ -90,9 +91,6 @@ CommandResponse = Union[Response, None]
 
 
 log = logging.getLogger(__name__)
-
-# TODO: fix current blacklist to be more clear.
-# TODO: add a proper blacklist for song-related data, not just users.
 
 
 class MusicBot(discord.Client):
@@ -138,7 +136,6 @@ class MusicBot(discord.Client):
         if self.config.usealias:
             self.aliases = Aliases(aliases_file)
 
-        self.blacklist = set(load_file(self.config.blacklist_file))
         self.autoplaylist = load_file(self.config.auto_playlist_file)
 
         self.aiolocks: DefaultDict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -154,9 +151,6 @@ class MusicBot(discord.Client):
             log.info("Loaded autoplaylist with %s entries", len(self.autoplaylist))
             self.filecache.load_autoplay_cachemap()
 
-        if self.blacklist:
-            log.debug("Loaded blacklist with %s entries", len(self.blacklist))
-
         # Factory function for server specific data objects.
         def server_factory() -> GuildSpecificData:
             return GuildSpecificData(self)
@@ -166,7 +160,7 @@ class MusicBot(discord.Client):
             server_factory
         )
 
-        # TODO: get rid of this, it likely is not needed.
+        # TODO: get rid of this, I added it for debug
         self.is_ready_done: bool = False
 
         self.spotify: Optional[Spotify] = None
@@ -678,6 +672,7 @@ class MusicBot(discord.Client):
         player.skip_state.reset()
 
         # This is the one event where it's ok to serialize autoplaylist entries
+        # TODO:  we can prevent it with: if entry.from_auto_playlist:
         await self.serialize_queue(player.voice_client.channel.guild)
 
         if self.config.write_current_song:
@@ -994,7 +989,7 @@ class MusicBot(discord.Client):
         """
         log.debug("Running on_player_entry_added")
         # if playing auto-playlist track and a user queues a track,
-        # if we're configured to do so, auto skip the apl track.
+        # if we're configured to do so, auto skip the auto playlist track.
         if (
             player.current_entry
             and player.current_entry.from_auto_playlist
@@ -1038,6 +1033,12 @@ class MusicBot(discord.Client):
         """Inspects available players and ultimately fire change_presence()"""
         activity = None  # type: Optional[discord.BaseActivity]
         status = discord.Status.online  # type: discord.Status
+        # NOTE:  Bots can only set: name, type, state, and url fields of activity.
+        # Even though Custom type is available, we cannot use emoji field with bots.
+        # So Custom Activity is effectively useless at time of writing.
+        # Streaming Activity is a coin toss at best. Usually status changes correctly.
+        # However all other details in the client might be wrong or missing.
+        # Example:  Youtube url shows "Twitch" in client profile info.
 
         playing = sum(1 for p in self.players.values() if p.is_playing)
         paused = sum(1 for p in self.players.values() if p.is_paused)
@@ -1048,45 +1049,55 @@ class MusicBot(discord.Client):
             if paused > playing:
                 status = discord.Status.idle
 
+            text = f"music on {total} servers"
+            if self.config.status_message:
+                text = self.config.status_message
+
             activity = discord.Activity(
                 type=discord.ActivityType.playing,
-                name=f"music on {total} guilds",
+                name=text,
             )
 
         # only 1 server is playing.
         elif playing:
             player = list(self.players.values())[0]
             if player.current_entry:
+                text = player.current_entry.title.strip()[:128]
+                if self.config.status_message:
+                    text = self.config.status_message
+
                 activity = discord.Activity(
                     type=discord.ActivityType.streaming,
                     url=player.current_entry.url,
-                    name=player.current_entry.title.strip()[:128],
-                    # platform="" does not work.
+                    name=text,
                 )
 
         # only 1 server is paused.
         elif paused:
             player = list(self.players.values())[0]
             if player.current_entry:
+                text = player.current_entry.title.strip()[:128]
+                if self.config.status_message:
+                    text = self.config.status_message
+
                 status = discord.Status.idle
                 activity = discord.Activity(
                     type=discord.ActivityType.custom,
-                    state=player.current_entry.title.strip()[:128],
+                    state=text,
                     name="Custom Status",  # seemingly required.
-                    # TODO: emoji is broken in dpy lib. 2024-01-10
-                    emoji={"name": ":pause_button:"},
                 )
 
         # nothing going on.
         else:
+            text = f" ~ {EMOJI_IDLE_ICON} ~ "
+            if self.config.status_message:
+                text = self.config.status_message
+
             status = discord.Status.idle
             activity = discord.CustomActivity(
                 type=discord.ActivityType.custom,
-                state=f" ~ {EMOJI_IDLE_ICON} ~ ",
+                state=text,
                 name="Custom Status",  # seems required to make idle status work.
-                # TODO: emoji is currently broken in discord.py lib. 2024-01-10
-                # emoji={"name": EMOJI_IDLE_ICON},
-                emoji="\N{POWER SLEEP SYMBOL}",
             )
 
         async with self.aiolocks[_func_()]:
@@ -1892,6 +1903,23 @@ class MusicBot(discord.Client):
 
         return None
 
+    def _do_song_blocklist_check(self, song_subject: str) -> None:
+        """
+        Check if the `song_subject` is matched in the block list.
+
+        :raises: musicbot.exceptions.CommandError
+            The subject is matched by a block list entry.
+        """
+        if not self.config.song_blocklist_enabled:
+            return
+
+        if self.config.song_blocklist.is_blocked(song_subject):
+            raise exceptions.CommandError(
+                # TODO: i18n
+                f"The requested song `{song_subject}` is blocked by the song blocklist.",
+                expire_in=30,
+            )
+
     async def handle_vc_inactivity(self, guild: discord.Guild) -> None:
         """
         Manage a server-specific event timer when MusicBot's voice channel becomes idle,
@@ -2160,17 +2188,17 @@ class MusicBot(discord.Client):
 
         return Response(desc, reply=True, delete_after=60)
 
-    async def cmd_blacklist(
+    async def cmd_blockuser(
         self,
         user_mentions: List[discord.Member],
         option: str,
     ) -> CommandResponse:
         """
         Usage:
-            {command_prefix}blacklist [ + | - | add | remove ] @UserName [@UserName2 ...]
+            {command_prefix}blockuser [ + | - | add | remove ] @UserName [@UserName2 ...]
 
-        Add or remove users to the blacklist.
-        Blacklisted users are forbidden from using bot commands.
+        Manage users in the block list.
+        Blocked users are forbidden from using all bot commands.
         """
 
         if not user_mentions:
@@ -2186,27 +2214,55 @@ class MusicBot(discord.Client):
             )
 
         for user in user_mentions.copy():
-            if user.id == self.config.owner_id:
-                print("[Commands:Blacklist] The owner cannot be blacklisted.")
+            if option in ["+", "add"] and self.config.user_blocklist.is_blocked(user):
+                if user.id == self.config.owner_id:
+                    raise exceptions.CommandError(
+                        "The owner cannot be added to the block list."
+                    )
+
+                log.info(
+                    "Not adding user to block list, already blocked:  %s/%s",
+                    user.id,
+                    user.name,
+                )
                 user_mentions.remove(user)
 
-        old_len = len(self.blacklist)
+            if option in ["-", "remove"] and not self.config.user_blocklist.is_blocked(
+                user
+            ):
+                log.info(
+                    "Not removing user from blocklist, not listed:  %s/%s",
+                    user.id,
+                    user.name,
+                )
+                user_mentions.remove(user)
+
+        # allow management regardless, but tell the user if it will apply.
+        if self.config.user_blocklist_enabled:
+            status_msg = "User block list is currently enabled."
+        else:
+            status_msg = "User block list is currently disabled."
+
+        old_len = len(self.config.user_blocklist)
+        user_ids = {str(user.id) for user in user_mentions}
 
         if option in ["+", "add"]:
-            self.blacklist.update(str(user.id) for user in user_mentions)
+            if not user_mentions:
+                raise exceptions.CommandError(
+                    "Cannot add the users you listed, they are already added."
+                )
 
-            # TODO:  this should be locked, unless it is made server-specific.
-            write_file(self.config.blacklist_file, self.blacklist)
+            async with self.aiolocks["user_blocklist"]:
+                self.config.user_blocklist.append_items(user_ids)
 
+            n_users = len(self.config.user_blocklist) - old_len
             return Response(
-                self.str.get(
-                    "cmd-blacklist-added", "{0} users have been added to the blacklist"
-                ).format(len(self.blacklist) - old_len),
+                f"{n_users} user(s) have been added to the block list.\n{status_msg}",
                 reply=True,
                 delete_after=10,
             )
 
-        if self.blacklist.isdisjoint(user.id for user in user_mentions):
+        if self.config.user_blocklist.is_disjoint(user_mentions):
             return Response(
                 self.str.get(
                     "cmd-blacklist-none",
@@ -2216,14 +2272,93 @@ class MusicBot(discord.Client):
                 delete_after=10,
             )
 
-        self.blacklist.difference_update(user.id for user in user_mentions)
-        write_file(self.config.blacklist_file, self.blacklist)
+        async with self.aiolocks["user_blocklist"]:
+            self.config.user_blocklist.remove_items(user_ids)
+
+        n_users = old_len - len(self.config.user_blocklist)
+        return Response(
+            f"{n_users} user(s) have been removed from the block list.\n{status_msg}",
+            reply=True,
+            delete_after=10,
+        )
+
+    async def cmd_blocksong(
+        self,
+        _player: MusicPlayer,
+        option: str,
+        leftover_args: List[str],
+        song_subject: str = "",
+    ) -> CommandResponse:
+        """
+        Usage:
+            {command_prefix}blocksong [ + | - | add | remove ] [subject]
+
+        Manage a block list applied to song requests and extracted info.
+        A `subject` may be a song URL or a word or phrase found in the track title.
+        If `subject` is omitted, a currently playing track will be used instead.
+
+        Song block list matches loosely, but is case sensitive.
+        So adding "Pie" will match "cherry Pie" but not "cherry pie" in checks.
+        """
+        if leftover_args:
+            song_subject = " ".join([song_subject, *leftover_args])
+
+        if not song_subject:
+            valid_url = self._get_song_url_or_none(song_subject, _player)
+            if not valid_url:
+                raise exceptions.CommandError(
+                    "You must provide a song subject if no song is currently playing.",
+                    expire_in=30,
+                )
+            song_subject = valid_url
+
+        if option not in ["+", "-", "add", "remove"]:
+            raise exceptions.CommandError(
+                self.str.get(
+                    "cmd-blacklist-invalid",
+                    'Invalid option "{0}" specified, use +, -, add, or remove',
+                ).format(option),
+                expire_in=20,
+            )
+
+        # allow management regardless, but tell the user if it will apply.
+        if self.config.song_blocklist_enabled:
+            status_msg = "Song block list is currently enabled."
+        else:
+            status_msg = "Song block list is currently disabled."
+
+        if option in ["+", "add"]:
+            if self.config.song_blocklist.is_blocked(song_subject):
+                raise exceptions.CommandError(
+                    f"Subject `{song_subject}` is already in the song block list.\n{status_msg}"
+                )
+
+            async with self.aiolocks["song_blocklist"]:
+                self.config.song_blocklist.append_items([song_subject])
+
+            # TODO: i18n/UI stuff.
+            return Response(
+                f"Added subject `{song_subject}` to the song block list.\n{status_msg}",
+                reply=True,
+                delete_after=10,
+            )
+
+        if not self.config.song_blocklist.is_blocked(song_subject):
+            raise exceptions.CommandError(
+                "The subject is not in the song block list and cannot be removed.",
+                expire_in=10,
+            )
+
+        # TODO:  add self.config.autoplaylist_remove_on_block
+        # if self.config.autoplaylist_remove_on_block
+        # and song_subject is current_entry.url
+        # and current_entry.from_auto_playlist
+        #   await self.remove_url_from_autoplaylist(song_subject)
+        async with self.aiolocks["song_blocklist"]:
+            self.config.song_blocklist.remove_items([song_subject])
 
         return Response(
-            self.str.get(
-                "cmd-blacklist-removed",
-                "{0} users have been removed from the blacklist",
-            ).format(old_len - len(self.blacklist)),
+            f"Subject `{song_subject}` has been removed from the block list.\n{status_msg}",
             reply=True,
             delete_after=10,
         )
@@ -2277,6 +2412,7 @@ class MusicBot(discord.Client):
             )
 
         if option in ["+", "add"]:
+            self._do_song_blocklist_check(url)
             if url not in self.autoplaylist:
                 await self.add_url_to_autoplaylist(url)
                 return Response(
@@ -2487,7 +2623,7 @@ class MusicBot(discord.Client):
         Adds the song to the playlist.  If a link is not provided, the first
         result from a youtube search is added to the queue.
 
-        If enabled in the config, the bot will also support Spotify URIs, however
+        If enabled in the config, the bot will also support Spotify URLs, however
         it will use the metadata (e.g song name and artist) to find a YouTube
         equivalent of the song. Streaming from Spotify is not possible.
         """
@@ -2630,7 +2766,7 @@ class MusicBot(discord.Client):
         Adds the song to the playlist next.  If a link is not provided, the first
         result from a youtube search is added to the queue.
 
-        If enabled in the config, the bot will also support Spotify URIs, however
+        If enabled in the config, the bot will also support Spotify URLs, however
         it will use the metadata (e.g song name and artist) to find a YouTube
         equivalent of the song. Streaming from Spotify is not possible.
         """
@@ -2646,6 +2782,46 @@ class MusicBot(discord.Client):
             leftover_args,
             song_url,
             head=True,
+        )
+
+    async def cmd_playnow(
+        self,
+        message: discord.Message,
+        _player: Optional[MusicPlayer],
+        channel: MessageableChannel,
+        guild: discord.Guild,
+        author: discord.Member,
+        permissions: PermissionGroup,
+        leftover_args: List[str],
+        song_url: str,
+    ) -> CommandResponse:
+        """
+        Usage:
+            {command_prefix}play song_link
+            {command_prefix}play text to search for
+            {command_prefix}play spotify_uri
+
+        Adds the song to be played back immediately.  If a link is not provided, the first
+        result from a youtube search is added to the queue.
+
+        If enabled in the config, the bot will also support Spotify URLs, however
+        it will use the metadata (e.g song name and artist) to find a YouTube
+        equivalent of the song. Streaming from Spotify is not possible.
+        """
+        await self._do_cmd_unpause_check(_player, channel)
+
+        # attempt to queue the song, but used the front of the queue and skip current playback.
+        return await self._cmd_play(
+            message,
+            _player,
+            channel,
+            guild,
+            author,
+            permissions,
+            leftover_args,
+            song_url,
+            head=True,
+            skip_playing=True,
         )
 
     async def cmd_repeat(
@@ -2937,10 +3113,16 @@ class MusicBot(discord.Client):
         head: bool,
         shuffle_entries: bool = False,
         ignore_video_id: str = "",
+        skip_playing: bool = False,
     ) -> CommandResponse:
         """
-        This function handles actually playing any given URL or song subject.
+        This function handles actually adding any given URL or song subject to
+        the player playlist if extraction was successful and various checks pass.
 
+        :param: head:  Toggle adding the song(s) to the front of the queue, not the end.
+        :param: shuffle_entries:  Shuffle entries before adding them to the queue.
+        :param: ignore_video_id:  Ignores a video in a playlist if it has this ID.
+        :param: skip_playing:  Skip current playback if a new entry is added.
         """
         player = _player if _player else None
 
@@ -2981,6 +3163,7 @@ class MusicBot(discord.Client):
         valid_song_url = self.downloader.get_url_or_none(song_url)
         if valid_song_url:
             song_url = valid_song_url
+            self._do_song_blocklist_check(song_url)
 
             # Handle if the link has a playlist ID in addition to a video ID.
             await self._cmd_play_compound_link(
@@ -2999,6 +3182,7 @@ class MusicBot(discord.Client):
             # treat all arguments as a search string.
             song_url = " ".join([song_url, *leftover_args])
             leftover_args = []  # prevent issues later.
+            self._do_song_blocklist_check(song_url)
 
         # Validate spotify links are supported before we try them.
         if "open.spotify.com" in song_url.lower():
@@ -3132,6 +3316,10 @@ class MusicBot(discord.Client):
                         "Extracted an entry with youtube:playlist as extractor key"
                     )
 
+                # Check the block list again, with the info this time.
+                self._do_song_blocklist_check(info.url)
+                self._do_song_blocklist_check(info.title)
+
                 if (
                     permissions.max_song_length
                     and info.duration_td.seconds > permissions.max_song_length
@@ -3154,7 +3342,16 @@ class MusicBot(discord.Client):
                 )
                 btext = entry.title
 
+            log.debug("Added song(s) at position %s", position)
             if position == 1 and player.is_stopped:
+                position = self.str.get("cmd-play-next", "Up next!")
+                reply_text %= (btext, position)
+
+            # shift the playing track to the end of queue and skip current playback.
+            elif skip_playing and player.is_playing and player.current_entry:
+                player.playlist.entries.append(player.current_entry)
+                player.skip()
+
                 position = self.str.get("cmd-play-next", "Up next!")
                 reply_text %= (btext, position)
 
@@ -3259,7 +3456,7 @@ class MusicBot(discord.Client):
 
         async with channel.typing():
             # TODO: find more streams to test.
-            # NOTE: this WILL return a link if ytdlp does not support the service.
+            # NOTE: this will return a URL if one was given but ytdl doesn't support it.
             try:
                 info = await self.downloader.extract_info(
                     song_url, download=False, process=True, as_stream=True
@@ -3276,6 +3473,11 @@ class MusicBot(discord.Client):
                     expire_in=30,
                 )
                 # TODO: could process these and force them to be stream entries...
+
+            self._do_song_blocklist_check(info.url)
+            # if its a "forced stream" this would be a waste.
+            if info.url != info.title:
+                self._do_song_blocklist_check(info.title)
 
             await player.playlist.add_stream_from_info(
                 info, channel=channel, author=author, head=False
@@ -3391,6 +3593,8 @@ class MusicBot(discord.Client):
         srvc = services[service]
         args_str = " ".join(leftover_args)
         search_query = f"{srvc}{items_requested}:{args_str}"
+
+        self._do_song_blocklist_check(args_str)
 
         search_msg = await self.safe_send_message(
             channel, self.str.get("cmd-search-searching", "Searching for videos...")
@@ -5306,7 +5510,138 @@ class MusicBot(discord.Client):
 
         return Response(codeblock.format(result))
 
+    @owner_only
+    async def cmd_checkupdates(self, channel: MessageableChannel) -> CommandResponse:
+        """
+        Usage:
+            {command_prefix}checkupdates
+
+        Display the current bot version and check for updates to MusicBot or dependencies.
+        The option `GitUpdatesBranch` must be set to check for updates to MusicBot.
+        """
+        git_status = ""
+        pip_status = ""
+        updates = False
+
+        await channel.typing()
+
+        # attempt fetching git info.
+        try:
+            git_bin = shutil.which("git")
+            if not git_bin:
+                git_status = "Could not locate git executable."
+                raise RuntimeError("Could not locate git executable.")
+
+            git_cmd_branch = [git_bin, "rev-parse", "--abbrev-ref", "HEAD"]
+            git_cmd_check = [git_bin, "fetch", "--dry-run"]
+
+            # extract current git branch name.
+            cmd_branch = await asyncio.create_subprocess_exec(
+                *git_cmd_branch,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            branch_stdout, _stderr = await cmd_branch.communicate()
+            branch_name = branch_stdout.decode("utf8").strip()
+
+            # check if fetch would update.
+            cmd_check = await asyncio.create_subprocess_exec(
+                *git_cmd_check,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            check_stdout, check_stderr = await cmd_check.communicate()
+            check_stdout += check_stderr
+            lines = check_stdout.decode("utf8").split("\n")
+
+            # inspect dry run for our branch name to see if there are updates.
+            commit_to = ""
+            for line in lines:
+                parts = line.split()
+                if branch_name in parts:
+                    commits = line.strip().split(" ", maxsplit=1)[0]
+                    _commit_at, commit_to = commits.split("..")
+                    break
+
+            if not commit_to:
+                git_status = f"No updates in branch `{branch_name}` remote."
+            else:
+                git_status = (
+                    f"New commits are available in `{branch_name}` branch remote."
+                )
+                updates = True
+        except (OSError, ValueError, ConnectionError, RuntimeError):
+            log.exception("Failed while checking for updates via git command.")
+            git_status = "Error while checking, see logs for details."
+
+        # attempt to fetch pip info.
+        try:
+            pip_cmd_check = [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "-U",
+                "-r",
+                "./requirements.txt",
+                "--quiet",
+                "--dry-run",
+                "--report",
+                "-",
+            ]
+            pip_cmd = await asyncio.create_subprocess_exec(
+                *pip_cmd_check,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            pip_stdout, _stderr = await pip_cmd.communicate()
+            pip_json = json.loads(pip_stdout)
+            pip_packages = ""
+            for pkg in pip_json.get("install", []):
+                meta = pkg.get("metadata", {})
+                if not meta:
+                    log.debug("Package missing meta in pip report.")
+                    continue
+                name = meta.get("name", "")
+                ver = meta.get("version", "")
+                if name and ver:
+                    pip_packages += f"Update for `{name}` to version: `{ver}`\n"
+            if pip_packages:
+                pip_status = pip_packages
+                updates = True
+            else:
+                pip_status = "No updates for dependencies found."
+        except (OSError, ValueError, ConnectionError):
+            log.exception("Failed to get pip update status due to some error.")
+            pip_status = "Error while checking, see logs for details."
+
+        if updates:
+            header = "There are updates for MusicBot available for download."
+        else:
+            header = "MusicBot is totally up-to-date!"
+
+        return Response(
+            f"{header}\n\n"
+            f"**Source Code Updates:**\n{git_status}\n\n"
+            f"**Dependency Updates:**\n{pip_status}",
+            delete_after=60,
+        )
+
+    async def cmd_botversion(self) -> CommandResponse:
+        """
+        Usage:
+            {command_prefix}botversion
+
+        Prints the current bot version to chat.
+        """
+        return Response(
+            "https://github.com/Just-Some-Bots/MusicBot\n"
+            f"Current version:  `{BOTVERSION}`",
+            delete_after=30,
+        )
+
     async def cmd_testready(self, channel: MessageableChannel) -> CommandResponse:
+        # TODO: remove this. :)
         """
         Not a real command, and will be removed in the future.
         """
@@ -5402,14 +5737,13 @@ class MusicBot(discord.Client):
             else:
                 return  # if I want to log this I just move it under the prefix check
 
-        # check for user id in blacklist.
+        # check for user id or name in blacklist.
         if (
-            # TODO: fix this when blacklist(s) get updated
-            str(message.author.id) in self.blacklist
+            self.config.user_blocklist.is_blocked(message.author)
             and message.author.id != self.config.owner_id
         ):
             log.warning(
-                "User blacklisted: %s/%s  tried command: %s",
+                "User in block list: %s/%s  tried command: %s",
                 message.author.id,
                 str(message.author),
                 command,
@@ -5629,7 +5963,7 @@ class MusicBot(discord.Client):
                 exc_info=True,
             )
 
-            expirein = e.expire_in if self.config.delete_messages else None
+            expirein = e.expire_in if self.config.delete_messages else 0
             alsodelete = message if self.config.delete_invoking else None
 
             if self.config.embeds:
