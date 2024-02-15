@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import io
 import json
@@ -20,6 +18,10 @@ from .lib.event_emitter import EventEmitter
 if TYPE_CHECKING:
     from .bot import MusicBot
     from .playlist import Playlist
+
+    AsyncFuture = asyncio.Future[Any]
+else:
+    AsyncFuture = asyncio.Future
 
 # Type alias
 EntryTypes = Union[URLPlaylistEntry, StreamPlaylistEntry]
@@ -70,9 +72,9 @@ class SourcePlaybackCounter(AudioSource):
 class MusicPlayer(EventEmitter, Serializable):
     def __init__(
         self,
-        bot: MusicBot,
+        bot: "MusicBot",
         voice_client: VoiceClient,
-        playlist: Playlist,
+        playlist: "Playlist",
     ):
         """
         Manage a MusicPlayer with all its bits and bolts.
@@ -82,12 +84,12 @@ class MusicPlayer(EventEmitter, Serializable):
         :param: playlist:  a collection of playable entries to be played.
         """
         super().__init__()
-        self.bot: MusicBot = bot
+        self.bot: "MusicBot" = bot
         self.loop: asyncio.AbstractEventLoop = bot.loop
         self.loopqueue: bool = False
         self.repeatsong: bool = False
         self.voice_client: VoiceClient = voice_client
-        self.playlist: Playlist = playlist
+        self.playlist: "Playlist" = playlist
         self.autoplaylist: List[str] = []
         self.state: MusicPlayerState = MusicPlayerState.STOPPED
         self.skip_state: SkipState = SkipState()
@@ -97,7 +99,7 @@ class MusicPlayer(EventEmitter, Serializable):
         self._play_lock = asyncio.Lock()
         self._current_player: Optional[VoiceClient] = None
         self._current_entry: Optional[EntryTypes] = None
-        self._stderr_future: Optional[asyncio.Future[Any]] = None
+        self._stderr_future: Optional[AsyncFuture] = None
 
         self._source: Optional[SourcePlaybackCounter] = None
 
@@ -120,7 +122,7 @@ class MusicPlayer(EventEmitter, Serializable):
             self._source._source.volume = value
 
     def on_entry_added(
-        self, playlist: Playlist, entry: EntryTypes, defer_serialize: bool = False
+        self, playlist: "Playlist", entry: EntryTypes, defer_serialize: bool = False
     ) -> None:
         """
         Event dispatched by Playlist when an entry is added to the queue.
@@ -433,11 +435,11 @@ class MusicPlayer(EventEmitter, Serializable):
     def _deserialize(
         cls,
         raw_json: Dict[str, Any],
-        bot: Optional[MusicBot] = None,
+        bot: Optional["MusicBot"] = None,
         voice_client: Optional[VoiceClient] = None,
-        playlist: Optional[Playlist] = None,
+        playlist: Optional["Playlist"] = None,
         **kwargs: Any,
-    ) -> MusicPlayer:
+    ) -> "MusicPlayer":
         assert bot is not None, cls._bad("bot")
         assert voice_client is not None, cls._bad("voice_client")
         assert playlist is not None, cls._bad("playlist")
@@ -462,10 +464,10 @@ class MusicPlayer(EventEmitter, Serializable):
     def from_json(
         cls,
         raw_json: str,
-        bot: MusicBot,  # pylint: disable=unused-argument
+        bot: "MusicBot",  # pylint: disable=unused-argument
         voice_client: VoiceClient,  # pylint: disable=unused-argument
-        playlist: Playlist,  # pylint: disable=unused-argument
-    ) -> Optional[MusicPlayer]:
+        playlist: "Playlist",  # pylint: disable=unused-argument
+    ) -> Optional["MusicPlayer"]:
         """
         Create a MusicPlayer instance from serialized `raw_json` string data.
         The remaining arguments are made available to the MusicPlayer
@@ -526,7 +528,7 @@ class MusicPlayer(EventEmitter, Serializable):
 # TODO: I need to add a check if the event loop is closed?
 
 
-def filter_stderr(stderr: io.BytesIO, future: asyncio.Future[Any]) -> None:
+def filter_stderr(stderr: io.BytesIO, future: AsyncFuture) -> None:
     """
     Consume a `stderr` bytes stream and check it for errors or warnings.
     Set the given `future` with either an error found in the stream or
