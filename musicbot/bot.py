@@ -2715,8 +2715,6 @@ class MusicBot(discord.Client):
         it will use the metadata (e.g song name and artist) to find a YouTube
         equivalent of the song. Streaming from Spotify is not possible.
         """
-        if not (leftover_args or song_url):
-            _player.resume()
         await self._do_cmd_unpause_check(_player, channel)
 
         return await self._cmd_play(
