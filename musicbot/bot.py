@@ -125,6 +125,7 @@ class MusicBot(discord.Client):
         self.last_status: Optional[discord.BaseActivity] = None
         self.autojoin_channels: Set[VoiceableChannel] = set()
         self.start_time: Optional[datetime] = datetime.now()
+        self.automatic_cleanup: Optional[asyncio.Task] = None
 
         self.config = Config(config_file)
 
@@ -1895,6 +1896,8 @@ class MusicBot(discord.Client):
         # wait_for_message is pretty neato
 
         await self._join_startup_channels(self.autojoin_channels)
+
+        self.automatic_cleanup = self.loop.create_task(self.automatic_cleanup())
 
         log.debug("Finish on_ready")
         self.is_ready_done = True
