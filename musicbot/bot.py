@@ -2757,6 +2757,9 @@ class MusicBot(discord.Client):
         """
         await self._do_cmd_unpause_check(_player, channel)
 
+        if song_url == "" and _player is not None:
+            return None  # return early we just wanted to resume
+
         return await self._cmd_play(
             message,
             _player,
