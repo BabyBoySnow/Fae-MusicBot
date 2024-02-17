@@ -1898,6 +1898,7 @@ class MusicBot(discord.Client):
         await self._join_startup_channels(self.autojoin_channels)
 
         self.automatic_cleanup = self.loop.create_task(self.automatic_cleanup())
+        log.debug("Scheduled automatic cleanup")
 
         log.debug("Finish on_ready")
         self.is_ready_done = True
@@ -1990,6 +1991,13 @@ class MusicBot(discord.Client):
             "  Leave when player idles: %s",
             "Disabled" if self.config.leave_player_inactive_for == 0 else "Enabled",
         )
+        log.info(
+            "  Automatically cleanup bot messages: %s",
+            "Disabled" if self.config.automatic_cleanup_time == 0 else "Enabled",
+        )
+        if self.config.automatic_cleanup_time:
+            log.info("    Delete after: %d", self.config.automatic_cleanup_time)
+
         if self.config.leave_player_inactive_for:
             log.info("    Timeout: %d seconds", self.config.leave_player_inactive_for)
         log.info("  Self Deafen: %s", ["Disabled", "Enabled"][self.config.self_deafen])
