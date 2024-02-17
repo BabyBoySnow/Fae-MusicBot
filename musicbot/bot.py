@@ -14,6 +14,7 @@ import sys
 import time
 import traceback
 from collections import defaultdict
+from datetime import datetime
 from io import BytesIO, StringIO
 from textwrap import dedent
 from typing import Any, DefaultDict, Dict, List, Optional, Set, Union
@@ -123,6 +124,7 @@ class MusicBot(discord.Client):
         self.cached_app_info: Optional[discord.AppInfo] = None
         self.last_status: Optional[discord.BaseActivity] = None
         self.autojoin_channels: Set[VoiceableChannel] = set()
+        self.start_time = Optional[datetime] = datetime.now()
 
         self.config = Config(config_file)
 
@@ -4894,7 +4896,7 @@ class MusicBot(discord.Client):
 
         try:
             float(search_range_str)  # lazy check
-            search_range = min(int(search_range_str), 100)
+            search_range = min(int(search_range_str), 1000)
         except ValueError:
             return Response(
                 self.str.get(
