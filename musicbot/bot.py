@@ -125,6 +125,7 @@ class MusicBot(discord.Client):
         self.last_status: Optional[discord.BaseActivity] = None
         self.autojoin_channels: Set[VoiceableChannel] = set()
         self.start_time: Optional[datetime] = datetime.now()
+        self.automatic_cleanup: Optional[asyncio.Task[None]] = None
 
         self.config = Config(config_file)
 
@@ -1895,7 +1896,6 @@ class MusicBot(discord.Client):
         # wait_for_message is pretty neato
 
         await self._join_startup_channels(self.autojoin_channels)
-
         self.automatic_cleanup = self.loop.create_task(self.automatic_cleanup())
         log.debug("Scheduled automatic cleanup")
 
@@ -4901,7 +4901,7 @@ class MusicBot(discord.Client):
         Removes up to [range] messages the bot has posted in chat. Default: 50, Max: 1000
         """
 
-        await self._clean_messages(search_range_str, message)
+        await self._clean_messages(message, channel, guild, author, search_range_str)
 
     async def _clean_messages(
         self,
@@ -4981,7 +4981,8 @@ class MusicBot(discord.Client):
 
         time_difference = (datetime.now() - self.start_time).total_seconds()
         if time_difference >= auto_clean_time:
-            await self.clean_messages("1000", None)
+            for channel in self.get_all_channels():
+                await self._clean_messages("100", channel)
             log.debug("Automatically performed a cleanup of the bot messages.")
 
         # Cancel the existing task before rescheduling
