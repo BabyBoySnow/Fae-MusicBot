@@ -124,7 +124,7 @@ class MusicBot(discord.Client):
         self.cached_app_info: Optional[discord.AppInfo] = None
         self.last_status: Optional[discord.BaseActivity] = None
         self.autojoin_channels: Set[VoiceableChannel] = set()
-        self.start_time = Optional[datetime] = datetime.now()
+        self.start_time: Optional[datetime] = datetime.now()
 
         self.config = Config(config_file)
 
