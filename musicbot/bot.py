@@ -156,9 +156,6 @@ class MusicBot(discord.Client):
             server_factory
         )
 
-        # TODO: get rid of this, I added it for debug
-        self.is_ready_done: bool = False
-
         self.spotify: Optional[Spotify] = None
         self.session: Optional[aiohttp.ClientSession] = None
 
@@ -4894,6 +4891,16 @@ class MusicBot(discord.Client):
         Removes up to [range] messages the bot has posted in chat. Default: 50, Max: 1000
         """
 
+        await self._clean_messages(search_range_str, message)
+
+    async def _clean_messages(
+        self,
+        message: discord.Message,
+        channel: MessageableChannel,
+        guild: discord.Guild,
+        author: discord.Member,
+        search_range_str: str = "50",
+    ) -> CommandResponse:
         try:
             float(search_range_str)  # lazy check
             search_range = min(int(search_range_str), 1000)
@@ -4955,6 +4962,23 @@ class MusicBot(discord.Client):
                     delete_after=15,
                 )
         return None
+
+    async def automatic_cleanup(self) -> None:
+        if self.start_time is None:
+            return
+
+        auto_clean_time = self.config.automatic_cleanup_time
+
+        time_difference = (datetime.now() - self.start_time).total_seconds()
+        if time_difference >= auto_clean_time:
+            await self.clean_messages("1000", None)
+
+        # Cancel the existing task before rescheduling
+        if hasattr(self, "_cleanup_task") and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
+
+        # Reschedule the automatic_cleanup method
+        self.loop.create_task(self.automatic_cleanup())
 
     async def cmd_pldump(
         self, channel: MessageableChannel, author: discord.Member, song_subject: str

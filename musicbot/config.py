@@ -243,7 +243,7 @@ class Config:
         )
         self.leave_after_queue_empty = config.getboolean(
             "MusicBot",
-            "LeaveAfterSong",
+            "LeaveAfterQueueEmpty",
             fallback=ConfigDefaults.leave_after_queue_empty,
         )
         self.leave_player_inactive_for = config.getduration(
@@ -258,6 +258,12 @@ class Config:
             "MusicBot",
             "DefaultSearchResults",
             fallback=ConfigDefaults.defaultsearchresults,
+        )
+
+        self.automatic_cleanup_time = config.getduration(
+            "MusicBot",
+            "AutomaticCleanup",
+            fallback=ConfigDefaults.automatic_cleanup_time,
         )
 
         self.enable_options_per_guild = config.getboolean(
@@ -645,9 +651,10 @@ class ConfigDefaults:
     searchlist: bool = False
     self_deafen: bool = True
     leave_inactive_channel: bool = False
-    leave_inactive_channel_timeout: float = 300.0
+    leave_inactive_channel_timeout: float = 300.0  # five minutes in seconds
     leave_after_queue_empty: bool = False
     leave_player_inactive_for: float = 0.0
+    automatic_cleanup_time: float = 604800  # one week in seconds
     defaultsearchresults: int = 3
     enable_options_per_guild: bool = False
     footer_text: str = DEFAULT_FOOTER_TEXT
