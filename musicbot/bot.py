@@ -127,6 +127,9 @@ class MusicBot(discord.Client):
         self.start_time: Optional[datetime] = datetime.now()
         self.automatic_cleanup: Optional[asyncio.Task[None]] = None
 
+        # TODO: figure out a better place to put this.
+        self.automatic_cleanup = self.loop.create_task(self.automatic_cleanup())
+
         self.config = Config(config_file)
 
         self.permissions = Permissions(perms_file, grant_all=[self.config.owner_id])
@@ -1896,8 +1899,6 @@ class MusicBot(discord.Client):
         # wait_for_message is pretty neato
 
         await self._join_startup_channels(self.autojoin_channels)
-        self.automatic_cleanup = self.loop.create_task(self.automatic_cleanup())
-        log.debug("Scheduled automatic cleanup")
 
         log.debug("Finish on_ready")
         self.is_ready_done = True
@@ -4993,6 +4994,8 @@ class MusicBot(discord.Client):
         # Cancel the existing task before rescheduling
         if hasattr(self, "_cleanup_task") and not self._cleanup_task.done():
             self._cleanup_task.cancel()
+
+        return None
 
     async def cmd_pldump(
         self, channel: MessageableChannel, author: discord.Member, song_subject: str
