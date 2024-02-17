@@ -103,6 +103,7 @@ class MusicBot(discord.Client):
         aliases_file: Optional[pathlib.Path] = None,
         use_certifi: bool = False,
     ) -> None:
+        super().__init__()
         log.info("Initializing MusicBot %s", BOTVERSION)
         load_opus_lib()
 
@@ -127,7 +128,7 @@ class MusicBot(discord.Client):
         self.start_time: Optional[datetime] = datetime.now()
         self.automatic_cleanup: Optional[asyncio.Task[None]] = None
 
-        # TODO: figure out a better place to put this.
+        # Schedule the automatic cleanup task
         self.automatic_cleanup = self.loop.create_task(self.automatic_cleanup())
 
         self.config = Config(config_file)
