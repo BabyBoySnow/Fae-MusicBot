@@ -130,6 +130,7 @@ class MusicBot(discord.Client):
 
         # Schedule the automatic cleanup task
         self.automatic_cleanup = self.loop.create_task(self.automatic_cleanup())
+        log.debug("Started event loop for automatic cleanup.")
 
         self.config = Config(config_file)
 
