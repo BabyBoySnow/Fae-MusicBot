@@ -4065,7 +4065,8 @@ class MusicBot(discord.Client):
             return Response(
                 self.str.get("cmd-pause-reply", "Paused music in `{0.name}`").format(
                     player.voice_client.channel
-                )
+                ),
+                delete_after=15,
             )
 
         raise exceptions.CommandError(
