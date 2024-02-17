@@ -722,12 +722,11 @@ def setup_signal_handlers(
     setattr(loop, "_sig_handler_set", True)
 
 
-def respawn_bot_process(pybin: str = "") -> None:
+def respawn_bot_process() -> None:
     """
     Use a platform dependent method to restart the bot process, without
     an external process/service manager.
-    This uses either the given `pybin` executable path or sys.executable
-    to run the bot using the arguments currently in sys.argv
+    This uses the sys.executable and sys.argv to restart the bot.
 
     This function attempts to make sure all buffers are flushed and logging
     is shut down before restarting the new process.
@@ -738,9 +737,7 @@ def respawn_bot_process(pybin: str = "") -> None:
     On Windows OS this will use subprocess.Popen to create a new console
     where the new bot is started, with a new PID, and exit this instance.
     """
-    if not pybin:
-        pybin = sys.executable
-    exec_args = [pybin] + sys.argv
+    exec_args = [sys.executable] + sys.argv
 
     shutdown_loggers()
     rotate_log_files()
@@ -754,11 +751,11 @@ def respawn_bot_process(pybin: str = "") -> None:
         # Seemed like the best way to avoid a pile of processes While keeping clean output in the shell.
         # There is seemingly no way to get the same effect as os.exec* on unix here in windows land.
         # The moment we end our existing instance, control is returned to the starting shell.
-        with subprocess.Popen(
+        subprocess.Popen(  # pylint: disable=consider-using-with
             exec_args,
             creationflags=subprocess.CREATE_NEW_CONSOLE,  # type: ignore[attr-defined]
-        ):
-            log.debug("Opened new MusicBot instance.  This terminal can now be closed!")
+        )
+        print("Opened a new MusicBot instance. This terminal can be safely closed!")
         sys.exit(0)
     else:
         # On Unix/Linux/Mac this should immediately replace the current program.
@@ -892,6 +889,7 @@ def main() -> None:
 
             # let the MusicBot run free!
             event_loop.run_until_complete(m.run_musicbot())
+            retries = 0
 
         except (ssl.SSLCertVerificationError, ClientConnectorCertificateError) as e:
             # For aiohttp, we need to look at the cause.
@@ -926,6 +924,7 @@ def main() -> None:
                     "Could not get Issuer Certificate from default trust store, trying certifi instead."
                 )
                 use_certifi = True
+                retries += 1
                 continue
 
         except SyntaxError:
@@ -998,6 +997,7 @@ def main() -> None:
                 shutdown_loggers()
                 rotate_log_files()
                 setup_loggers()
+                retries += 1
                 continue
 
             log.error(
@@ -1012,14 +1012,18 @@ def main() -> None:
 
         except TerminateSignal as e:
             exit_signal = e
+            retries = 0
             break
 
         except RestartSignal as e:
             if e.get_name() == "RESTART_SOFT":
-                retries = 0
+                log.info("MusicBot is doing a soft restart...")
+                retries = 1
                 continue
 
+            log.info("MusicBot is doing a full process restart...")
             exit_signal = e
+            retries = 1
             break
 
         except Exception:  # pylint: disable=broad-exception-caught
@@ -1027,15 +1031,14 @@ def main() -> None:
             break
 
         finally:
-            retries += 1
             if event_loop:
-                log.debug("Closing event loop...")
+                log.debug("Closing event loop.")
                 event_loop.close()
 
-        sleeptime = min(retries * 2, max_wait_time)
-        if sleeptime:
-            log.info("Restarting in %s seconds...", sleeptime)
-            time.sleep(sleeptime)
+            sleeptime = min(retries * 2, max_wait_time)
+            if sleeptime:
+                log.info("Restarting in %s seconds...", sleeptime)
+                time.sleep(sleeptime)
 
     print()
     log.info("All done.")
