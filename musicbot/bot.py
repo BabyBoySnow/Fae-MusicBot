@@ -2740,7 +2740,7 @@ class MusicBot(discord.Client):
         author: discord.Member,
         permissions: PermissionGroup,
         leftover_args: List[str],
-        song_url: str,
+        song_url: str = "",
     ) -> CommandResponse:
         """
         Usage:
@@ -2756,6 +2756,10 @@ class MusicBot(discord.Client):
         equivalent of the song. Streaming from Spotify is not possible.
         """
         await self._do_cmd_unpause_check(_player, channel)
+
+        if song_url == "":
+            _player.resume()
+            return  # return early no need to do anything else
 
         return await self._cmd_play(
             message,
