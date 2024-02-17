@@ -2757,7 +2757,7 @@ class MusicBot(discord.Client):
         """
 
         if song_url == "" and _player is not None:
-            return self.cmd_resume(_player)
+            return await self.cmd_resume(_player)
 
         return await self._cmd_play(
             message,
