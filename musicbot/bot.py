@@ -103,7 +103,6 @@ class MusicBot(discord.Client):
         aliases_file: Optional[pathlib.Path] = None,
         use_certifi: bool = False,
     ) -> None:
-        super().__init__()
         log.info("Initializing MusicBot %s", BOTVERSION)
         load_opus_lib()
 
@@ -126,11 +125,6 @@ class MusicBot(discord.Client):
         self.last_status: Optional[discord.BaseActivity] = None
         self.autojoin_channels: Set[VoiceableChannel] = set()
         self.start_time: Optional[datetime] = datetime.now()
-        self.automatic_cleanup: Optional[asyncio.Task[None]] = None
-
-        # Schedule the automatic cleanup task
-        self.automatic_cleanup = self.loop.create_task(self.automatic_cleanup())
-        log.debug("Started event loop for automatic cleanup.")
 
         self.config = Config(config_file)
 
@@ -161,6 +155,9 @@ class MusicBot(discord.Client):
         self.server_data: DefaultDict[int, GuildSpecificData] = defaultdict(
             server_factory
         )
+
+        # TODO: get rid of this, I added it for debug
+        self.is_ready_done: bool = False
 
         self.spotify: Optional[Spotify] = None
         self.session: Optional[aiohttp.ClientSession] = None
@@ -1993,13 +1990,6 @@ class MusicBot(discord.Client):
             "  Leave when player idles: %s",
             "Disabled" if self.config.leave_player_inactive_for == 0 else "Enabled",
         )
-        log.info(
-            "  Automatically cleanup bot messages: %s",
-            "Disabled" if self.config.automatic_cleanup_time == 0 else "Enabled",
-        )
-        if self.config.automatic_cleanup_time:
-            log.info("    Delete after: %d", self.config.automatic_cleanup_time)
-
         if self.config.leave_player_inactive_for:
             log.info("    Timeout: %d seconds", self.config.leave_player_inactive_for)
         log.info("  Self Deafen: %s", ["Disabled", "Enabled"][self.config.self_deafen])
@@ -4904,16 +4894,6 @@ class MusicBot(discord.Client):
         Removes up to [range] messages the bot has posted in chat. Default: 50, Max: 1000
         """
 
-        await self._clean_messages(message, channel, guild, author, search_range_str)
-
-    async def _clean_messages(
-        self,
-        message: discord.Message,
-        channel: MessageableChannel,
-        guild: discord.Guild,
-        author: discord.Member,
-        search_range_str: str = "50",
-    ) -> CommandResponse:
         try:
             float(search_range_str)  # lazy check
             search_range = min(int(search_range_str), 1000)
@@ -4974,29 +4954,6 @@ class MusicBot(discord.Client):
                     ).format(len(deleted), "s" * bool(deleted)),
                     delete_after=15,
                 )
-        return None
-
-    async def automatic_cleanup(self) -> None:
-        if self.start_time is None:
-            return
-
-        auto_clean_time = self.config.automatic_cleanup_time
-
-        time_difference = (datetime.now() - self.start_time).total_seconds()
-        if time_difference >= auto_clean_time:
-            for channel in self.get_all_channels():
-                await self._clean_messages(
-                    message=None,
-                    channel=channel,
-                    author=None,
-                    search_range_str="100",
-                )
-            log.debug("Automatically performed a cleanup of the bot messages.")
-
-        # Cancel the existing task before rescheduling
-        if hasattr(self, "_cleanup_task") and not self._cleanup_task.done():
-            self._cleanup_task.cancel()
-
         return None
 
     async def cmd_pldump(
