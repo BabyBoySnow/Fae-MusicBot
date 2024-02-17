@@ -4982,7 +4982,12 @@ class MusicBot(discord.Client):
         time_difference = (datetime.now() - self.start_time).total_seconds()
         if time_difference >= auto_clean_time:
             for channel in self.get_all_channels():
-                await self._clean_messages("100", channel)
+                await self._clean_messages(
+                    message=None,
+                    channel=channel,
+                    author=None,
+                    search_range_str="100",
+                )
             log.debug("Automatically performed a cleanup of the bot messages.")
 
         # Cancel the existing task before rescheduling
