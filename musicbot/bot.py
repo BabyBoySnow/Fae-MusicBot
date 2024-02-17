@@ -4981,10 +4981,6 @@ class MusicBot(discord.Client):
         if hasattr(self, "_cleanup_task") and not self._cleanup_task.done():
             self._cleanup_task.cancel()
 
-        # Reschedule the automatic_cleanup method
-        self.loop.create_task(self.automatic_cleanup())
-        log.debug("Started event loop for automatic cleanup.")
-
     async def cmd_pldump(
         self, channel: MessageableChannel, author: discord.Member, song_subject: str
     ) -> CommandResponse:
