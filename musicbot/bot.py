@@ -2208,9 +2208,9 @@ class MusicBot(discord.Client):
         Displays the latency between the bot and discord. Relative to expected response time.
         """
         e = self._gen_embed()
-        e.title = "Ping"
+        e.title = "Pong"
         latency = round(self.latency * 1000, 2)
-        e.description = f"\U0001f3d3 {latency}"
+        e.description = f"\U0001f3d3:  {latency}"
         if 0 <= round(self.latency * 1000, 2) < 25:
             e.colour = discord.Colour.green()
         elif 25 <= round(self.latency * 1000, 2) < 40:
@@ -2227,9 +2227,9 @@ class MusicBot(discord.Client):
         Displays the latency between the bot and discord. Relative to expected response time.
         """
         e = self._gen_embed()
-        e.title = "Pong"
+        e.title = "Ping"
         latency = round(self.latency * 1000, 2)
-        e.description = f"\U0001f3d3 {latency}"
+        e.description = f"\U0001f3d3:  {latency}"
         if 0 <= round(self.latency * 1000, 2) < 25:
             e.colour = discord.Colour.green()
         elif 25 <= round(self.latency * 1000, 2) < 40:
