@@ -4350,7 +4350,7 @@ class MusicBot(discord.Client):
             author.voice.channel.name,
         )
 
-        self.server_data[guild.id].last_np_msg = message.channel
+        last_np_msg = self.server_data[guild.id].last_np_msg
 
         return Response(
             self.str.get("cmd-summon-reply", "Connected to `{0.name}`").format(
@@ -6451,14 +6451,6 @@ class MusicBot(discord.Client):
             f"Current version:  `{BOTVERSION}`",
             delete_after=30,
         )
-
-    async def cmd_testready(self, channel: MessageableChannel) -> CommandResponse:
-        # TODO: remove this. :)
-        """
-        Not a real command, and will be removed in the future.
-        """
-        await self.safe_send_message(channel, "!!RUN_TESTS!!", expire_in=30)
-        return None
 
     async def on_message(self, message: discord.Message) -> None:
         """
