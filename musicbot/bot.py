@@ -3504,7 +3504,7 @@ class MusicBot(discord.Client):
         await channel.typing()
 
         if not player and permissions.summonplay and channel.guild:
-            response = await self.cmd_summon(channel.guild, author)
+            response = await self.cmd_summon(channel.guild, author, message)
             if response:
                 if self.config.embeds:
                     content = self._gen_embed()
@@ -3756,6 +3756,7 @@ class MusicBot(discord.Client):
         guild: discord.Guild,
         author: discord.Member,
         permissions: PermissionGroup,
+        message: discord.Message,
         song_url: str,
     ) -> CommandResponse:
         """
@@ -3773,7 +3774,7 @@ class MusicBot(discord.Client):
         if _player:
             player = _player
         elif permissions.summonplay:
-            response = await self.cmd_summon(guild, author)
+            response = await self.cmd_summon(guild, author, message)
             if response:
                 if self.config.embeds:
                     content = self._gen_embed()
