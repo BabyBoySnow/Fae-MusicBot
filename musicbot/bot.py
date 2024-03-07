@@ -1334,6 +1334,8 @@ class MusicBot(discord.Client):
         if not player.is_stopped and not player.is_dead:
             player.play(_continue=True)
 
+        await self.update_now_playing_status()
+
     async def on_player_entry_added(
         self,
         player: MusicPlayer,
@@ -2465,6 +2467,8 @@ class MusicBot(discord.Client):
             log.debug("Player activity timer is being reset.")
 
     async def cmd_syncnp(self) -> None:
+        """
+        Updates the activity status manually. Should be removed later."""
         await self.update_now_playing_status()
 
     async def cmd_resetplaylist(self, player: MusicPlayer) -> CommandResponse:
