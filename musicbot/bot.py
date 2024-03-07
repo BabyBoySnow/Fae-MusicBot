@@ -4280,7 +4280,7 @@ class MusicBot(discord.Client):
         )
 
     async def cmd_summon(
-        self, guild: discord.Guild, author: discord.Member
+        self, guild: discord.Guild, author: discord.Member, message: discord.Message
     ) -> CommandResponse:
         """
         Usage:
@@ -4356,6 +4356,8 @@ class MusicBot(discord.Client):
             ),
             delete_after=30,
         )
+
+        last_np_msg.channel = message.channel
 
     async def cmd_pause(self, player: MusicPlayer) -> CommandResponse:
         """
