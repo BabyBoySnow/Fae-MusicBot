@@ -2464,7 +2464,7 @@ class MusicBot(discord.Client):
             event.set()
             log.debug("Player activity timer is being reset.")
 
-    async def cmd_syncnp(self):
+    async def cmd_syncnp(self) -> None:
         await self.update_now_playing_status()
 
     async def cmd_resetplaylist(self, player: MusicPlayer) -> CommandResponse:
