@@ -329,9 +329,7 @@ class MusicBot(discord.Client):
                     )
                     # self.server_data[gid].availability_paused = True
                     continue
-                log.info(
-                    "Resuming playback of player:  (%s) %s", gid, repr(player)
-                )
+                log.info("Resuming playback of player:  (%s) %s", gid, repr(player))
                 player.guild_or_net_unavailable = False
                 player.resume()
             player.guild_or_net_unavailable = False

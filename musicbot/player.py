@@ -328,7 +328,9 @@ class MusicPlayer(EventEmitter, Serializable):
             return
 
         if self.is_paused and self._current_player:
-            log.voicedebug("MusicPlayer was previously paused, resuming current player.")
+            log.voicedebug(
+                "MusicPlayer was previously paused, resuming current player."
+            )
             return self.resume()
 
         async with self._play_lock:
@@ -375,9 +377,7 @@ class MusicPlayer(EventEmitter, Serializable):
                         self.volume,
                     )
                 )
-                log.debug(
-                    "Playing %r using %r", self._source, self.voice_client
-                )
+                log.debug("Playing %r using %r", self._source, self.voice_client)
                 self.voice_client.play(self._source, after=self._playback_finished)
 
                 self._current_player = self.voice_client
