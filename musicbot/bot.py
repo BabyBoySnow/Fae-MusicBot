@@ -9,6 +9,7 @@ import random
 import re
 import shutil
 import signal
+import socket
 import ssl
 import sys
 import time
@@ -32,14 +33,15 @@ from .constants import (
     DEFAULT_DATA_NAME_SERVERS,
     DEFAULT_OWNER_GROUP_NAME,
     DEFAULT_PERMS_GROUP_NAME,
+    DEFAULT_PING_SLEEP,
+    DEFAULT_PING_TARGET,
+    DEFAULT_PING_TIMEOUT,
     DISCORD_MSG_CHAR_LIMIT,
     EMOJI_CHECK_MARK_BUTTON,
     EMOJI_CROSS_MARK_BUTTON,
     EMOJI_IDLE_ICON,
     EMOJI_NEXT_ICON,
     EMOJI_PREV_ICON,
-    PING_RESOLVE_TIMEOUT,
-    PING_TEST_TIMEOUT,
 )
 from .constants import VERSION as BOTVERSION
 from .constants import VOICE_CLIENT_MAX_RETRY_CONNECT, VOICE_CLIENT_RECONNECT_TIMEOUT
@@ -253,63 +255,59 @@ class MusicBot(discord.Client):
 
     async def _test_network(self) -> None:
         """
-        A looping method that tests network connectivity, roughly every second.
-        The method stores a resolved IP for discord.com in self._ping_peer_addr.
-        It uses http and only does HEAD request after the name is resolved.
+        A self looping method that tests network connectivity.
+        This will call to the systems ping command and use its return status.
         """
         if self.logout_called:
-            log.noise("Network tester is closing down.")  # type: ignore[attr-defined]
+            log.noise("Network ping test is closing down.")  # type: ignore[attr-defined]
             return
 
-        # This should be impossible, but covering mypy ass here.
-        if not self.session:
-            return
-
-        # Resolve the domain once so look up wont block when net is down, also faster.
+        # Resolve the given target to speed up pings.
+        ping_target = self._ping_peer_addr
         if not self._ping_peer_addr:
             try:
-                async with self.session.get(
-                    "http://discord.com", timeout=PING_RESOLVE_TIMEOUT
-                ) as r:
-                    if r.connection and r.connection.transport:
-                        peername = r.connection.transport.get_extra_info("peername")
-                        if peername is not None:
-                            self._ping_peer_addr = peername[0]
-                            self.network_outage = False
-                        log.everything(  # type: ignore[attr-defined]
-                            "Ping Target:  %s", self._ping_peer_addr
-                        )
-                    else:
-                        log.warning(
-                            "Could not get IP for discord.com, aiohttp failed, this could be a bug."
-                        )
-            except (
-                aiohttp.ClientError,
-                asyncio.exceptions.TimeoutError,
-                OSError,
-            ):
-                log.exception("Could not resolve discord.com to an IP!")
+                ai = socket.getaddrinfo(DEFAULT_PING_TARGET, 80)
+                self._ping_peer_addr = ai[0][4][0]
+                ping_target = self._ping_peer_addr
+            except OSError:
+                log.warning("Could not resolve ping target.")
+                ping_target = DEFAULT_PING_TARGET
+
+        # Make a ping call based on OS.
+        if os.name == "nt":
+            # Windows ping -w uses milliseconds.
+            t = 1000 * DEFAULT_PING_TIMEOUT
+            ping_cmd = ["ping", "-n", "1", "-w", str(t), ping_target]
         else:
-            # actual "ping" test with the IP we resolved.
-            try:
-                ping_host = f"http://{self._ping_peer_addr}"
-                async with self.session.head(ping_host, timeout=PING_TEST_TIMEOUT) as r:
-                    if self.network_outage:
-                        self.on_network_up()
+            t = DEFAULT_PING_TIMEOUT
+            ping_cmd = ["ping", "-c", "1", "-w", str(t), ping_target]
 
-                    self.network_outage = False
-            except (aiohttp.ClientError, asyncio.exceptions.TimeoutError, OSError):
-                if not self.network_outage:
-                    self.on_network_down()
-                self.network_outage = True
+        # execute the ping command.
+        p = await asyncio.create_subprocess_exec(
+            ping_cmd[0],
+            *ping_cmd[1:],
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        ping_status = await p.wait()
 
-        # Just sleep for a second
+        # Ping success, network up.
+        if ping_status == 0:
+            if self.network_outage:
+                self.on_network_up()
+            self.network_outage = False
+
+        # Ping failed, network down.
+        else:
+            if not self.network_outage:
+                self.on_network_down()
+            self.network_outage = True
+
+        # Sleep before next ping.
         try:
-            await asyncio.sleep(1)
+            await asyncio.sleep(DEFAULT_PING_SLEEP)
         except asyncio.exceptions.CancelledError:
-            log.noise(  # type: ignore[attr-defined]
-                "Network tester sleep was cancelled, closing down test process."
-            )
+            log.noise("Network ping test cancelled.")  # type: ignore[attr-defined]
             return
 
         # set up the next ping task if possible.
@@ -848,6 +846,8 @@ class MusicBot(discord.Client):
                     if self.config.debug_mode:
                         log.warning("The disconnect failed or was cancelled.")
 
+        await self.update_now_playing_status()
+
     async def disconnect_all_voice_clients(self) -> None:
         """
         Loop over all references that may have a VoiceClient and ensure they are
@@ -997,7 +997,7 @@ class MusicBot(discord.Client):
         Event called by MusicPlayer when playback of an entry is started.
         """
         log.debug("Running on_player_play")
-        self._handle_guild_auto_pause(player)
+        await self._handle_guild_auto_pause(player)
         await self.reset_player_inactivity(player)
         await self.update_now_playing_status()
         # manage the cache since we may have downloaded something.
@@ -1388,7 +1388,7 @@ class MusicBot(discord.Client):
         else:
             log.exception("Player error", exc_info=ex)
 
-    async def update_now_playing_status(self) -> None:
+    async def update_now_playing_status(self, set_offline: bool = False) -> None:
         """Inspects available players and ultimately fire change_presence()"""
         activity = None  # type: Optional[discord.BaseActivity]
         status = discord.Status.online  # type: discord.Status
@@ -1399,8 +1399,21 @@ class MusicBot(discord.Client):
         # However all other details in the client might be wrong or missing.
         # Example:  Youtube url shows "Twitch" in client profile info.
 
+        # if requested, try to set the bot offline.
+        if set_offline:
+            activity = discord.Activity(
+                type=discord.ActivityType.custom,
+                state="",
+                name="Custom Status",  # seemingly required.
+            )
+            await self.change_presence(
+                status=discord.Status.invisible, activity=activity
+            )
+            self.last_status = activity
+            return
+
+        # We ignore player related status when logout is called.
         if self.logout_called:
-            # cannot set ourselves offline unless we do that before logout.
             log.debug("Logout under way, ignoring status update event.")
             return
 
@@ -1812,9 +1825,13 @@ class MusicBot(discord.Client):
         print()
         log.warning("Caught a signal from the OS: %s", sig.name)
 
-        if self and not self.logout_called:
-            log.info("Disconnecting and closing down MusicBot...")
-            await self.logout()
+        try:
+            if self and not self.logout_called:
+                log.info("Disconnecting and closing down MusicBot...")
+                await self.logout()
+        except Exception as e:
+            log.exception("Exception thrown while handling interrupt signal!")
+            raise KeyboardInterrupt() from e
 
     async def run_musicbot(self) -> None:
         """
@@ -1893,6 +1910,8 @@ class MusicBot(discord.Client):
         Disconnect all voice clients and signal MusicBot to close it's connections to discord.
         """
         log.noise("Logout has been called.")  # type: ignore[attr-defined]
+        await self.update_now_playing_status(set_offline=True)
+
         self.logout_called = True
         await self.disconnect_all_voice_clients()
         return await super().close()
@@ -2950,7 +2969,7 @@ class MusicBot(discord.Client):
             )
         return True
 
-    def _handle_guild_auto_pause(self, player: MusicPlayer) -> None:
+    async def _handle_guild_auto_pause(self, player: MusicPlayer) -> None:
         """
         Check the current voice client channel for members and determine
         if the player should be paused automatically.
@@ -2963,9 +2982,12 @@ class MusicBot(discord.Client):
             return
 
         if not player.voice_client.is_connected():
-            log.noise(  # type: ignore[attr-defined]
-                "Ignored auto-pause due to VoiceClient says it is not connected..."
-            )
+            if self.loop:
+                log.noise(  # type: ignore[attr-defined]
+                    "Waiting to handle auto-pause due to VoiceClient says it is not connected..."
+                )
+                await asyncio.sleep(0.8)
+                self.loop.create_task(self._handle_guild_auto_pause(player))
             return
 
         channel = player.voice_client.channel
@@ -2974,7 +2996,7 @@ class MusicBot(discord.Client):
         is_empty = is_empty_voice_channel(
             channel, include_bots=self.config.bot_exception_ids
         )
-        if is_empty and not player.paused_auto and player.is_playing:
+        if is_empty and player.is_playing:
             log.info(
                 "Playing in an empty voice channel, running auto pause for guild: %s",
                 guild,
@@ -2982,10 +3004,11 @@ class MusicBot(discord.Client):
             player.pause()
             player.paused_auto = True
 
-        elif not is_empty and player.paused_auto and player.is_paused:
+        elif not is_empty and player.paused_auto:
             log.info("Previously auto paused player is unpausing for guild: %s", guild)
             player.paused_auto = False
-            player.resume()
+            if player.is_paused:
+                player.resume()
 
     async def _do_cmd_unpause_check(
         self, player: Optional[MusicPlayer], channel: MessageableChannel
@@ -6968,11 +6991,11 @@ class MusicBot(discord.Client):
         if before.channel:
             player = self.get_player_in(before.channel.guild)
             if player:
-                self._handle_guild_auto_pause(player)
+                await self._handle_guild_auto_pause(player)
         if after.channel:
             player = self.get_player_in(after.channel.guild)
             if player:
-                self._handle_guild_auto_pause(player)
+                await self._handle_guild_auto_pause(player)
 
     async def on_guild_join(self, guild: discord.Guild) -> None:
         """
