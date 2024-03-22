@@ -34,6 +34,7 @@ This fork contains changes that may or may not be merged into upstream.
 Cherry-picking (or otherwise copying) is welcome should you feel inclined.  
 Here is a list of changes made so far, with most recent first:
 
+- Adds `seek` command to restart the current playing track at the given time.
 - Adds commands `latency` for users and `botlatency` for owners.
 - Adds playback progress to saved queue, and starts playback at the saved position.
 - Adds an offline status update to logout/shutdown process.
@@ -117,5 +118,3 @@ Here is a list of changes made so far, with most recent first:
 - Improved audio cache management, settings to limit storage use and `cache` command to see info or manually clear it. **[merged]**  
 - Per-Server command prefix settings available via new `setprefix` command. Allows almost anything to be a prefix! **[merged]**  
 - Player inactivity timer options to auto-disconnect when the player is not playing for a set period of time. **[merged]**  
-
-:)
