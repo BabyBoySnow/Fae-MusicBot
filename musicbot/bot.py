@@ -142,6 +142,7 @@ class MusicBot(discord.Client):
 
         self.use_certifi: bool = use_certifi
         self.exit_signal: ExitSignals = None
+        self._init_time: float = time.time()
         self._os_signal: Optional[signal.Signals] = None
         self._ping_peer_addr: str = ""
         self.network_outage: bool = False
@@ -282,10 +283,14 @@ class MusicBot(discord.Client):
                 ping_target = DEFAULT_PING_TARGET
 
         # Make a ping call based on OS.
-        ping_path = shutil.which("ping")
-        if not ping_path:
-            log.warning("Could not locate path to `ping` system executable.")
-            ping_path = "ping"
+        if not hasattr(self, "_mb_ping_exe_path"):
+            ping_path = shutil.which("ping")
+            if not ping_path:
+                log.warning("Could not locate `ping` executable in your environment.")
+                ping_path = "ping"
+            setattr(self, "_mb_ping_exe_path", ping_path)
+        else:
+            ping_path = getattr(self, "_mb_ping_exe_path", "ping")
 
         ping_cmd: List[str] = []
         if os.name == "nt":
@@ -305,9 +310,25 @@ class MusicBot(discord.Client):
                 stderr=asyncio.subprocess.DEVNULL,
             )
             ping_status = await p.wait()
+        except FileNotFoundError:
+            log.error(
+                "MusicBot could not locate a `ping` command path.  Early network outage detection will not function."
+                "\nMusicBot tried the following command:   %s",
+                " ".join(ping_cmd),
+            )
+            return
+        except PermissionError:
+            log.error(
+                "MusicBot was not allowed to execute the `ping` command.  Early network outage detection will not function."
+                "\nMusicBot tried the following command:   %s",
+                " ".join(ping_cmd),
+            )
+            return
         except OSError:
             log.error(
-                "Your environment may not allow the `ping` system command.  Early network outage detection will not function.",
+                "Your environment may not allow the `ping` system command.  Early network outage detection will not function."
+                "\nMusicBot tried the following command:   %s",
+                " ".join(ping_cmd),
                 exc_info=self.config.debug_mode,
             )
             return
@@ -2050,11 +2071,6 @@ class MusicBot(discord.Client):
 
         print(flush=True)
 
-        # TODO: if on-demand loading is not good enough, we can load guild specifics here.
-        # if self.config.enable_options_per_guild:
-        #    for s in self.guilds:
-        #        await self._load_guild_options(s)
-
         # validate bound channels and log them.
         if self.config.bound_channels:
             # Get bound channels by ID, and validate that we can use them.
@@ -2170,7 +2186,14 @@ class MusicBot(discord.Client):
             )
             log.warning(str(conf_warn)[1:])
 
-        # self.loop.create_task(self._on_ready_call_later())
+        # Pre-load guild specific data / options.
+        # TODO:  probably change this later for better UI/UX.
+        if self.config.enable_options_per_guild:
+            for guild in self.guilds:
+                # Triggers on-demand task to load data from disk.
+                self.server_data[guild.id].is_ready()
+                # context switch to give scheduled task an execution window.
+                await asyncio.sleep(0)
 
     async def _on_ready_always(self) -> None:
         """
@@ -6700,6 +6723,20 @@ class MusicBot(discord.Client):
         sl = self.latency * 1000
         return Response(
             f"**API Latency:** `{sl:.0f} ms`{voice_lat}",
+            delete_after=30,
+        )
+
+    async def cmd_uptime(self) -> CommandResponse:
+        """
+        Usage:
+            {command_prefix}uptime
+
+        Displays the MusicBot uptime, since last start/restart.
+        """
+        uptime = time.time() - self._init_time
+        delta = format_song_duration(uptime)
+        return Response(
+            f"MusicBot has been up for `{delta}`",
             delete_after=30,
         )
 
