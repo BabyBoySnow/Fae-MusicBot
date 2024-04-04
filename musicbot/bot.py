@@ -267,6 +267,10 @@ class MusicBot(discord.Client):
         A self looping method that tests network connectivity.
         This will call to the systems ping command and use its return status.
         """
+        if not self.config.enable_network_checker:
+            log.debug("Network ping test is disabled via config.")
+            return
+
         if self.logout_called:
             log.noise("Network ping test is closing down.")  # type: ignore[attr-defined]
             return
@@ -5210,7 +5214,8 @@ class MusicBot(discord.Client):
                     f"Option `{opt}` is not editable, value cannot be displayed.",
                     expire_in=30,
                 )
-            cur_val, ini_val = self.config.register.get_values(opt)
+            # TODO: perhaps make use of currently unused display value for empty configs.
+            cur_val, ini_val, _disp_val = self.config.register.get_values(opt)
             return Response(
                 f"**Option:** `{opt}`\n"
                 f"Current Value:  `{cur_val}`\n"
@@ -5998,7 +6003,7 @@ class MusicBot(discord.Client):
             option_arg = leftover_args.pop(0)
         else:
             group_arg = leftover_args.pop(0)
-        if option == "set":
+        if option in ["set", "show"]:
             option_arg = leftover_args.pop(0)
 
         if user_mentions:
@@ -6013,7 +6018,8 @@ class MusicBot(discord.Client):
                 expire_in=30,
             )
 
-        if option in ["help", "set"]:
+        # Make sure the option is set if the sub-command needs it.
+        if option in ["help", "set", "show"]:
             p_opt = self.permissions.register.get_config_option(group_arg, option_arg)
             if p_opt is None:
                 option_arg = f"[{group_arg}] > {option_arg}"
@@ -6028,9 +6034,10 @@ class MusicBot(discord.Client):
             default = (
                 "\nThis permission can only be set by editing the permissions file."
             )
+            # TODO:  perhaps use empty display values here.
             if opt.editable:
                 dval = self.permissions.register.to_ini(opt, use_default=True)
-                default = f"\nBy default this permission is set to: {dval}"
+                default = f"\nBy default this permission is set to: `{dval}`"
             return Response(
                 f"**Permission:** `{opt.option}`\n{opt.comment}{default}",
                 delete_after=60,
@@ -6087,10 +6094,12 @@ class MusicBot(discord.Client):
 
         # Display the current permissions group and INI file values.
         if option == "show":
-            cur_val, ini_val = self.permissions.register.get_values(opt)
+            cur_val, ini_val, empty_display_val = self.permissions.register.get_values(
+                opt
+            )
             return Response(
                 f"**Permission:** `{opt}`\n"
-                f"Current Value:  `{cur_val}`\n"
+                f"Current Value:  `{cur_val}` {empty_display_val}\n"
                 f"INI File Value:  `{ini_val}`",
                 delete_after=30,
             )
@@ -6693,7 +6702,9 @@ class MusicBot(discord.Client):
 
             vl = vc.latency * 1000
             vla = vc.average_latency * 1000
-            vclats += f"- `{vl:.0f} ms` (`{vla:.0f} ms` Avg.) in region: `{vc.channel.rtc_region}`\n"
+            # Display Auto for region instead of None
+            region = vc.channel.rtc_region or "auto"
+            vclats += f"- `{vl:.0f} ms` (`{vla:.0f} ms` Avg.) in region: `{region}`\n"
 
         if not vclats:
             vclats = "No voice clients connected.\n"

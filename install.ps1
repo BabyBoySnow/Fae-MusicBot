@@ -1,3 +1,7 @@
+# This script is designed to be used without pulling the repository first!
+# You can simply download and run it to have MusicBot installed for you.
+# Current the script only supports one installation per user account.
+#
 # Notice:
 #  If you want to run this .ps1 script without setting execution policy in PowerShell,
 #  you can make use of the following command in command-prompt.
@@ -30,6 +34,18 @@ if($iagree -ne "Y" -and $iagree -ne "y")
     Return
 }
 
+if (-Not (Get-Command winget -ErrorAction SilentlyContinue) )
+{
+    ""
+    "Sorry, you must install WinGet to use this installer."
+    "Supposedly included with Windows, but we couldn't find it."
+    "You can get it via Microsoft Store, the Official repo on github, or "
+    "use the following link to quickly download an installer for it:"
+    "  https://aka.ms/getwinget  "
+    ""
+    Return
+}
+
 # -----------------------------------------------------CONSTANTS-------------------------------------------------------
 
 $DEFAULT_URL_BASE = "https://discordapp.com/api"
@@ -50,12 +66,12 @@ else
     "git already installed"
 }
 
-# Check if python is installed
+# Check if Any python 3 is installed
 "checking if python is already installed..."
 Invoke-Expression "winget list -q Python.Python.3"
 if (!($LastExitCode -eq 0))
 {
-    # install python
+    # install python version 3.11 with the py.exe launcher.
     "installing python..."
     Invoke-Expression "winget install Python.Python.3.11 --custom \`"/passive Include_launcher=1\`""
 }

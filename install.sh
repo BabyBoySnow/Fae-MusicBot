@@ -7,31 +7,52 @@
 # a variety of different Linux distros.
 # 
 
-#----------------------------------------------Constants----------------------------------------------#
-DEFAULT_URL_BASE="https://discordapp.com/api"
-PYEXEC=3
+#-----------------------------------------------Configs-----------------------------------------------#
+# Original repo is here:
+#MusicBotGitURL="https://github.com/Just-Some-Bots/MusicBot.git"
+# This is currently required since upstream does not have the updated service file.
+MusicBotGitURL="https://github.com/itsTheFae/MusicBot.git"
+CloneDir="MusicBot"
+VenvDir="${CloneDir}Venv"
+
+EnableUnlistedBranches=0
 DEBUG=0
 
+
+#----------------------------------------------Constants----------------------------------------------#
+DEFAULT_URL_BASE="https://discordapp.com/api"
+# Suported versions of python using only major.minor format
+PySupported=("3.8" "3.9" "3.10" "3.11" "3.12")
+PyBin="python3"
+# Path updated by find_python
+PyBinPath="$(command -v "$PyBin")"
+
 USER_OBJ_KEYS="id username discriminator verified bot email avatar"
+
+# Status indicator for post-install notice about python venv based install.
+InstalledViaVenv=0
 
 declare -A BOT
 
 # Get some notion of the current OS / distro name.
 # This will not exhaust options, or ensure a correct name is returned. 
+# A good example is Raspberry Pi OS 11 which returns Debian.
 if [ -n "$(command -v lsb_release)" ] ; then
-    # Most debian-based distros will have this command.
-    # Redhat-based distros usually need to install it via redhat-lsb-core package
+    # Most debian-based distros might have this installed, but not always.
+    # Redhat-based distros usually need to install it via redhat-lsb-core package.
     DISTRO_NAME=$(lsb_release -s -d)
 elif [ -f "/etc/os-release" ]; then
     # Many distros have this file, but not all of them are version complete.
     # For example, CentOS 7 will return "CentOS Linux 7 (Core)"
     # If we need to know the minor version, we need /etc/redhat-release instead.
+    # Same for Debian, which uses /etc/debian_version file instead.
     DISTRO_NAME=$(grep PRETTY_NAME /etc/os-release | sed 's/PRETTY_NAME=//g' | tr -d '="')
 elif [ -f "/etc/debian_version" ]; then
     DISTRO_NAME="Debian $(cat /etc/debian_version)"
 elif [ -f "/etc/redhat-release" ]; then
     DISTRO_NAME=$(cat /etc/redhat-release)
 else
+    # In case everything fails, use Kernel name and release.
     DISTRO_NAME="$(uname -s) $(uname -r)"
 fi
 
@@ -41,9 +62,71 @@ function exit_err() {
     exit 1
 }
 
+function find_python() {
+    # compile a list of bin names to try for.
+    PyBins=("python3")  # We hope that python3 maps to a good version.
+    for Ver in "${PySupported[@]}" ; do
+        # Typical of source builds and many packages to include the version dot.
+        PyBins+=("python${Ver}")
+        # Some distros remove the dot.
+        PyBins+=("python${Ver//./}")
+    done
+    PyBins+=("python")  # Fat chance, but might as well try versionless too.
+
+    # Test each possible PyBin until the first supported version is found.
+    for PyBinTest in "${PyBins[@]}" ; do
+        if ! command -v "$PyBinTest" > /dev/null 2>&1 ; then
+            continue
+        fi
+
+        # Get version data from python, assume python exists in PATH somewhere.
+        # shellcheck disable=SC2207
+        PY_VER=($($PyBinTest -c "import sys; print('%s %s %s' % sys.version_info[:3])" || { echo "0 0 0"; }))
+        if [[ "${PY_VER[0]}" == "0" ]]; then
+            continue
+        fi
+        PY_VER_MAJOR=$((PY_VER[0]))
+        PY_VER_MINOR=$((PY_VER[1]))
+        PY_VER_PATCH=$((PY_VER[2]))
+        # echo "run.sh detected $PY_BIN version: $PY_VER_MAJOR.$PY_VER_MINOR.$PY_VER_PATCH"
+
+        # Major version must be 3+
+        if [[ $PY_VER_MAJOR -ge 3 ]]; then
+            # If 3, minor version minimum is 3.8
+            if [[ $PY_VER_MINOR -eq 8 ]]; then
+                # if 3.8, patch version minimum is 3.8.7
+                if [[ $PY_VER_PATCH -ge 7 ]]; then
+                    PyBinPath="$(command -v "$PyBinTest")"
+                    PyBin="$PyBinTest"
+                    debug "Selected: $PyBinTest  @  $PyBinPath"
+                    return 0
+                fi
+            fi
+            # if 3.9+ it should work.
+            if [[ $PY_VER_MINOR -ge 9 ]]; then
+                PyBinPath="$(command -v "$PyBinTest")"
+                PyBin="$PyBinTest"
+                debug "Selected: $PyBinTest  @  $PyBinPath"
+                return 0
+            fi
+        fi
+    done
+
+    PyBinPath="$(command -v "python3")"
+    PyBin="python3"
+    debug "Default: python3  @  $PyBinPath"
+    return 1
+}
+
 function pull_musicbot_git() {
     cd ~ || exit_err "Fatal:  Could not change to home directory."
-    echo " "
+
+    if [ -d "${CloneDir}" ] ; then
+        echo "Error: A directory named ${CloneDir} already exists in your home directory."
+        exit_err "Delete the ${CloneDir} directory and try again, or complete the install manually."
+    fi
+
+    echo ""
     echo "MusicBot currently has three branches available."
     echo "  master - An older MusicBot, for older discord.py. May not work without tweaks!"
     echo "  review - Newer MusicBot, usually stable with less updates than the dev branch."
@@ -53,23 +136,28 @@ function pull_musicbot_git() {
     case ${BRANCH,,} in
     "dev")
         echo "Installing from 'dev' branch..."
-        git clone https://github.com/Just-Some-Bots/MusicBot.git MusicBot -b dev
+        git clone "${MusicBotGitURL}" "${CloneDir}" -b dev
         ;;
     "review")
         echo "Installing from 'review' branch..."
-        git clone https://github.com/Just-Some-Bots/MusicBot.git MusicBot -b review
+        git clone "${MusicBotGitURL}" "${CloneDir}" -b review
         ;;
     "master")
         echo "Installing from 'master' branch..."
-        git clone https://github.com/Just-Some-Bots/MusicBot.git MusicBot -b master
+        git clone "${MusicBotGitURL}" "${CloneDir}" -b master
         ;;
     *)
-        exit_err "Unknown branch name given, install cannot continue."
+        if [ "$EnableUnlistedBranches" == "1" ] ; then
+            echo "Installing from '${BRANCH}' branch..."
+            git clone "${MusicBotGitURL}" "${CloneDir}" -b "$BRANCH"
+        else
+            exit_err "Unknown branch name given, install cannot continue."
+        fi
         ;;
     esac
-    cd MusicBot || exit_err "Fatal:  Could not change to MusicBot directory."
+    cd "${CloneDir}" || exit_err "Fatal:  Could not change to MusicBot directory."
 
-    python${PYEXEC} -m pip install --upgrade -r requirements.txt
+    $PyBin -m pip install --upgrade -r requirements.txt
 
     cp ./config/example_options.ini ./config/options.ini
 }
@@ -78,18 +166,44 @@ function setup_as_service() {
     local DIR
     DIR="$(pwd)"
     echo ""
-    echo "Do you want to set up the bot as a service?"
-    read -rp "This would mean the bot is automatically started and kept up by the system to ensure its online as much as possible [N/y] " SERVICE
+    echo "The installer can also install MusicBot as a system service file."
+    echo "This starts the MusicBot at boot and after failures."
+    echo "You must specify a User and Group which the service will run as."
+    read -rp "Install the musicbot system service? [N/y] " SERVICE
     case $SERVICE in
     [Yy]*)
+        # Because running this service as root is really not a good idea,
+        # a user and group is required here.
+        echo "Please provide an existing User name and Group name for the service to use."
+        read -rp "Enter an existing User name: " BotSysUserName
+        echo ""
+        read -rp "Enter an existing Group name: " BotSysGroupName
+        echo ""
+        # TODO: maybe check if the given values are valid, or create the user/group...
+
+        if [ "$BotSysUserName" == "" ] ; then
+            echo "Cannot set up the service with a blank User name."
+            return
+        fi
+        if [ "$BotSysGroupName" == "" ] ; then
+            echo "Cannot set up the service with a blank Group name."
+            return
+        fi
+
         echo "Setting up the bot as a service"
-        sed -i "s/versionnum/$PYEXEC/g" ./musicbot.service
-        sed -i "s,mbdirectory,$DIR,g" ./musicbot.service
-        sudo mv ~/MusicBot/musicbot.service /etc/systemd/system/
+        # Replace parts of musicbot.service with proper values.
+        sed -i "s,#User=mbuser,User=${BotSysUserName},g" ./musicbot.service
+        sed -i "s,#Group=mbusergroup,Group=${BotSysGroupName},g" ./musicbot.service
+        sed -i "s,/usr/bin/pythonversionnum,${PyBinPath},g" ./musicbot.service
+        sed -i "s,mbdirectory,${DIR},g" ./musicbot.service
+
+        # Copy the service file into place and enable it.
+        sudo cp ~/${CloneDir}/musicbot.service /etc/systemd/system/
         sudo chown root:root /etc/systemd/system/musicbot.service
         sudo chmod 644 /etc/systemd/system/musicbot.service
         sudo systemctl enable musicbot
         sudo systemctl start musicbot
+
         echo "Bot setup as a service and started"
         ask_setup_aliases
         ;;
@@ -104,7 +218,7 @@ function ask_setup_aliases() {
     case $SERVICE in
     [Yy]*)
         echo "Setting up command..."
-        sudo mv ~/MusicBot/musicbotcmd /usr/bin/musicbot
+        sudo cp ~/${CloneDir}/musicbotcmd /usr/bin/musicbot
         sudo chown root:root /usr/bin/musicbot
         sudo chmod 644 /usr/bin/musicbot
         sudo chmod +x /usr/bin/musicbot
@@ -293,14 +407,30 @@ fi
 echo ""
 
 case $DISTRO_NAME in
-*"Arch Linux"*)
+*"Arch Linux"*)  # Tested working 2024.03.01  @  2024/03/31
+    # NOTE: Arch now uses system managed python packages, so venv is required.
     sudo pacman -Syu
-    sudo pacman -S git python python-pip opus libffi libsodium ncurses gdbm \
-        glibc zlib sqlite tk openssl ffmpeg curl jq
+    sudo pacman -S curl ffmpeg git jq python python-pip
+
+    # Make sure newly install python is used.
+    find_python
+
+    # create a venv to install MusicBot into and activate it.
+    $PyBin -m venv "${VenvDir}"
+    InstalledViaVenv=1
+    CloneDir="${VenvDir}/${CloneDir}"
+    # shellcheck disable=SC1091
+    source "${VenvDir}/bin/activate"
+
+    # Update python to use venv path.
+    find_python
+
     pull_musicbot_git
+
+    deactivate
     ;;
 
-*"Pop!_OS"*)
+*"Pop!_OS"*)  # Tested working 22.04  @  2024/03/29
     sudo apt-get update -y
     sudo apt-get upgrade -y
     sudo apt-get install build-essential software-properties-common \
@@ -311,23 +441,52 @@ case $DISTRO_NAME in
     ;;
 
 *"Ubuntu"* )
+    # Some cases only use major version number to allow for both .04 and .10 minor versions.
     case $DISTRO_NAME in
-    # Using only major versions of Ubuntu to allow for both .04 and .10 minor versions.
-    *"Ubuntu 18"*)
-        PYEXEC="3.8"
-
+    *"Ubuntu 18.04"*)  #  Tested working 18.04 @ 2024/03/29
         sudo apt-get update -y
         sudo apt-get upgrade -y
-        # 18.04 needs explicit python3.8 package, and has no pip package.
+        # 18.04 needs to build a newer version from source.
         sudo apt-get install build-essential software-properties-common \
-            unzip curl git ffmpeg libopus-dev libffi-dev libsodium-dev \
-            python3.8-dev jq -y
+            libopus-dev libffi-dev libsodium-dev libssl-dev \
+            zlib1g-dev libncurses5-dev libgdbm-dev libnss3-dev \
+            libreadline-dev libsqlite3-dev libbz2-dev \
+            unzip curl git jq ffmpeg -y
 
-        # python3.8 needs a manual pip install on 18.04
-        python${PYEXEC} <(curl -s https://bootstrap.pypa.io/get-pip.py)
+        # Ask if we should build python
+        echo "We need to build python from source for your system. It will be installed using altinstall target."
+        read -rp "Would you like to continue ? [N/y]" BuildPython
+        if [ "${BuildPython,,}" == "y" ] || [ "${BuildPython,,}" == "yes" ] ; then
+            # Build python.
+            PyBuildVer="3.10.14"
+            PySrcDir="Python-${PyBuildVer}"
+            PySrcFile="${PySrcDir}.tgz"
+
+            curl -o "$PySrcFile" "https://www.python.org/ftp/python/${PyBuildVer}/${PySrcFile}"
+            tar -xzf "$PySrcFile"
+            cd "${PySrcDir}" || exit_err "Fatal:  Could not change to python source directory."
+
+            ./configure --enable-optimizations
+            sudo make altinstall
+
+            # Ensure python bin is updated with altinstall name.
+            find_python
+            RetVal=$?
+            if [ "$RetVal" == "0" ] ; then
+                # manually install pip package for current user.
+                $PyBin <(curl -s https://bootstrap.pypa.io/get-pip.py)
+            else
+                echo "Error:  Could not find python on the PATH after installing it."
+                exit 1
+            fi
+        fi
 
         pull_musicbot_git
         ;;
+
+    # Tested working:
+    # 20.04  @  2024/03/28
+    # 22.04  @  2024/03/30
     *"Ubuntu 20"*|*"Ubuntu 22"*)
         sudo apt-get update -y
         sudo apt-get upgrade -y
@@ -337,26 +496,62 @@ case $DISTRO_NAME in
 
         pull_musicbot_git
         ;;
+
+    # Ubuntu version 17 and under is not supported.
     *)
         echo "Unsupported version of Ubuntu."
+        echo "If your version is newer than Ubuntu 22, please consider contributing install steps."
         exit 1
         ;;
     esac
     ;;
 
+# NOTE: Raspberry Pi OS 11, i386 arch, returns Debian as distro name.
 *"Debian"*)
-    sudo apt-get update -y
-    sudo apt-get upgrade -y
-    sudo apt-get install git libopus-dev libffi-dev libsodium-dev ffmpeg \
-        build-essential libncursesw5-dev libgdbm-dev libc6-dev zlib1g-dev \
-        libsqlite3-dev tk-dev libssl-dev openssl python3 python3-pip curl jq -y
-    pull_musicbot_git
+    case $DISTRO_NAME in
+    # Tested working:
+    # R-Pi OS 11  @  2024/03/29
+    # Debian 11.3  @  2024/03/29
+    *"Debian GNU/Linux 11"*)
+        sudo apt-get update -y
+        sudo apt-get upgrade -y
+        sudo apt-get install git libopus-dev libffi-dev libsodium-dev ffmpeg \
+            build-essential libncursesw5-dev libgdbm-dev libc6-dev zlib1g-dev \
+            libsqlite3-dev tk-dev libssl-dev openssl python3 python3-pip curl jq -y
+
+        pull_musicbot_git
+        ;;
+
+    *"Debian GNU/Linux 12"*)  # Tested working 12.5  @  2024/03/31
+        # Debian 12 uses system controlled python packages.
+        sudo apt-get update -y
+        sudo apt-get upgrade -y
+        sudo apt-get install build-essential libopus-dev libffi-dev libsodium-dev \
+            python3-full python3-dev python3-pip git ffmpeg curl
+
+        # Create and activate a venv using python that was just installed.
+        find_python
+        $PyBin -m venv "${VenvDir}"
+        InstalledViaVenv=1
+        CloneDir="${VenvDir}/${CloneDir}"
+        # shellcheck disable=SC1091
+        source "${VenvDir}/bin/activate"
+        find_python
+
+        pull_musicbot_git
+        
+        # exit venv
+        deactiveate
+        ;;
+
+    *)
+        exit_err "This version of Debian is not currently supported."
+        ;;
+    esac
     ;;
 
-# I don't know if this will still work.
-# Raspberry Pi OS i386 (bullseye) does not return "Raspbian" you get "Debian" instead.
-# I cannot test the arm versions without a board or an emulator...
-# Guess it wont hurt to leave it in for now...
+# Legacy install, needs testing.
+# Modern Raspberry Pi OS does not return "Raspbian"
 *"Raspbian"*)
     sudo apt-get update -y
     sudo apt-get upgrade -y
@@ -387,7 +582,7 @@ case $DISTRO_NAME in
         ;;
 
     # Supported versions.
-    *"CentOS 7"*)
+    *"CentOS 7"*)  # Tested 7.9 @ 2024/03/28
         # TODO:  CentOS 7 reaches EOL June 2024.
 
         # Enable extra repos, as required for ffmpeg
@@ -400,22 +595,38 @@ case $DISTRO_NAME in
         sudo yum -y install opus-devel libffi-devel openssl-devel bzip2-devel \
             git curl jq ffmpeg
 
-        # Build python.
-        PyBuildVer="3.10.14"
-        PySrcDir="Python-${PyBuildVer}"
-        PySrcFile="${PySrcDir}.tgz"
+        # Ask if we should build python
+        echo "We need to build python from source for your system. It will be installed using altinstall target."
+        read -rp "Would you like to continue ? [N/y]" BuildPython
+        if [ "${BuildPython,,}" == "y" ] || [ "${BuildPython,,}" == "yes" ] ; then
+            # Build python.
+            PyBuildVer="3.10.14"
+            PySrcDir="Python-${PyBuildVer}"
+            PySrcFile="${PySrcDir}.tgz"
 
-        curl -o "$PySrcFile" "https://www.python.org/ftp/python/${PyBuildVer}/${PySrcFile}"
-        tar -xzf "$PySrcFile"
-        cd "${PySrcDir}" || exit_err "Fatal:  Could not change to python source directory."
+            curl -o "$PySrcFile" "https://www.python.org/ftp/python/${PyBuildVer}/${PySrcFile}"
+            tar -xzf "$PySrcFile"
+            cd "${PySrcDir}" || exit_err "Fatal:  Could not change to python source directory."
 
-        ./configure --enable-optimizations
-        sudo make altinstall
+            ./configure --enable-optimizations
+            sudo make altinstall
+
+            # Ensure python bin is updated with altinstall name.
+            find_python
+            RetVal=$?
+            if [ "$RetVal" == "0" ] ; then
+                # manually install pip package for the current user.
+                $PyBin <(curl -s https://bootstrap.pypa.io/get-pip.py)
+            else
+                echo "Error:  Could not find python on the PATH after installing it."
+                exit 1
+            fi
+        fi
 
         pull_musicbot_git
         ;;
 
-    *"CentOS Stream 8"*)
+    *"CentOS Stream 8"*)  # Tested 2024/03/28
         # Install extra repos, needed for ffmpeg.
         # Do not use -y flag here.
         sudo dnf install epel-release
@@ -436,6 +647,7 @@ case $DISTRO_NAME in
     esac
     ;;
 
+# Legacy installer, needs testing.
 *"Darwin"*)
     /usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)"
     brew update
@@ -464,4 +676,17 @@ else
     echo "The bot has been successfully installed to your user directory"
     echo "You can configure the bot by navigating to the config folder, and modifying the contents of the options.ini and permissions.ini files"
     echo "Once configured, you can start the bot by running the run.sh file"
+fi
+
+if [ "$InstalledViaVenv" == "1" ] ; then
+    echo ""
+    echo "Notice:"
+    echo "This system required MusicBot to be installed inside a Python venv."
+    echo "In order to run or update MusicBot, you must use the venv or binaries stored within it."
+    echo "To activate the venv, run the following command: "
+    echo "  source ${VenvDir}/bin/activate"
+    echo ""
+    echo "The venv module is bundled with python 3.3+, for more info about venv, see here:"
+    echo "  https://docs.python.org/3/library/venv.html"
+    echo ""
 fi

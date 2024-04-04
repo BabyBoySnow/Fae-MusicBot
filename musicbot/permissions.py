@@ -147,6 +147,8 @@ class Permissions:
                 DEFAULT_OWNER_GROUP_NAME
             )
 
+        self.register.validate_register_destinations()
+
     def _generate_default_group(self, name: str) -> "PermissionGroup":
         """Generate a group with `name` using PermissionDefaults."""
         return PermissionGroup(name, self, PermissionsDefaults)
@@ -346,7 +348,12 @@ class PermissionGroup:
             dest="ignore_non_voice",
             getter="getstrset",
             default=defaults.ignore_non_voice,
-            comment="List of command names that can only be used while in the same voice channel as the MusicBot. Separated by spaces.",
+            comment=(
+                "List of command names that can only be used while in the same voice channel as MusicBot.\n"
+                "Some commands will always require the user to be in voice, regardless of this list.\n"
+                "Command names should be separated by spaces."
+            ),
+            empty_display_val="(No commands listed)",
         )
         self.granted_to_roles = self._mgr.register.init_option(
             section=name,
@@ -373,6 +380,7 @@ class PermissionGroup:
             getter="getint",
             default=defaults.max_songs,
             comment="Maximum number of songs a user is allowed to queue. A value of 0 means unlimited.",
+            empty_display_val="(Unlimited)",
         )
         self.max_song_length = self._mgr.register.init_option(
             section=name,
@@ -384,6 +392,7 @@ class PermissionGroup:
                 "Maximum length of a song in seconds. A value of 0 means unlimited.\n"
                 "This permission may not be enforced if song duration is not available."
             ),
+            empty_display_val="(Unlimited)",
         )
         self.max_playlist_length = self._mgr.register.init_option(
             section=name,
@@ -392,6 +401,7 @@ class PermissionGroup:
             getter="getint",
             default=defaults.max_playlist_length,
             comment="Maximum number of songs a playlist is allowed to have to be queued. A value of 0 means unlimited.",
+            empty_display_val="(Unlimited)",
         )
         self.max_search_items = self._mgr.register.init_option(
             section=name,
@@ -516,6 +526,8 @@ class PermissionGroup:
     def format(self, for_user: bool = False) -> str:
         """
         Format the current group values into INI-like text.
+
+        :param: for_user:  Present values for display, instead of literal values.
         """
         perms = f"Permission group name:  {self.name}\n"
         for opt in self._mgr.register.option_list:
@@ -540,6 +552,24 @@ class PermissionOptionRegistry(ConfigOptionRegistry):
     def __init__(self, config: Permissions, parser: ExtendedConfigParser) -> None:
         super().__init__(config, parser)
 
+    def validate_register_destinations(self) -> None:
+        """Check all configured options for matching destination definitions."""
+        if not isinstance(self._config, Permissions):
+            raise RuntimeError(
+                "Dev Bug! Somehow this is Config when it should be Permissions."
+            )
+
+        errors = []
+        for opt in self._option_list:
+            if not hasattr(self._config.groups[opt.section], opt.dest):
+                errors.append(
+                    f"Permission `{opt}` has an missing destination named:  {opt.dest}"
+                )
+        if errors:
+            msg = "Dev Bug!  Some permissions failed validation.\n"
+            msg += "\n".join(errors)
+            raise RuntimeError(msg)
+
     @property
     def distinct_options(self) -> Set[str]:
         """Unique Permission names for Permission groups."""
@@ -558,9 +588,12 @@ class PermissionOptionRegistry(ConfigOptionRegistry):
             new_opts.append(opt)
         self._option_list = new_opts
 
-    def get_values(self, opt: ConfigOption) -> Tuple[RegTypes, str]:
+    def get_values(self, opt: ConfigOption) -> Tuple[RegTypes, str, str]:
         """
         Get the values in PermissionGroup and *ConfigParser for this option.
+        Returned tuple contains parsed value, ini-string, and a display string
+        for the parsed config value if applicable.
+        Display string may be empty if not used.
         """
         if not isinstance(self._config, Permissions):
             raise RuntimeError(
@@ -568,7 +601,7 @@ class PermissionOptionRegistry(ConfigOptionRegistry):
             )
 
         if not opt.editable:
-            return ("", "")
+            return ("", "", "")
 
         if opt.section not in self._config.groups:
             raise ValueError(
@@ -586,10 +619,14 @@ class PermissionOptionRegistry(ConfigOptionRegistry):
             )
 
         parser_get = getattr(self._parser, opt.getter)
-        config_value = getattr(self._config, opt.dest)
+        config_value = getattr(self._config.groups[opt.section], opt.dest)
         parser_value = parser_get(opt.section, opt.option, fallback=opt.default)
 
-        return (config_value, parser_value)
+        display_config_value = ""
+        if not display_config_value and opt.empty_display_val:
+            display_config_value = opt.empty_display_val
+
+        return (config_value, parser_value, display_config_value)
 
     def get_parser_value(self, opt: ConfigOption) -> RegTypes:
         """returns the parser's parsed value for the given option."""
