@@ -517,11 +517,16 @@ class MusicBot(discord.Client):
 
                     try:
                         player = await self.get_player(
-                            channel, create=True, deserialize=True
+                            channel,
+                            create=True,
+                            deserialize=self.config.persistent_queue,
                         )
 
-                        if player.is_stopped:
+                        if player.is_stopped and len(player.playlist) > 0:
                             player.play()
+
+                        if self.config.auto_playlist and len(player.playlist) == 0:
+                            await self.on_player_finished_playing(player)
 
                     except (TypeError, exceptions.PermissionsError):
                         continue
@@ -530,11 +535,16 @@ class MusicBot(discord.Client):
                     log.debug("MusicBot will make a new MusicPlayer now...")
                     try:
                         player = await self.get_player(
-                            channel, create=True, deserialize=True
+                            channel,
+                            create=True,
+                            deserialize=self.config.persistent_queue,
                         )
 
-                        if player.is_stopped:
+                        if player.is_stopped and len(player.playlist) > 0:
                             player.play()
+
+                        if self.config.auto_playlist and len(player.playlist) == 0:
+                            await self.on_player_finished_playing(player)
 
                     except (TypeError, exceptions.PermissionsError):
                         continue
@@ -1529,6 +1539,8 @@ class MusicBot(discord.Client):
         """
         Serialize the current queue for a server's player to json.
         """
+        if not self.config.persistent_queue:
+            return
 
         player = self.get_player_in(guild)
         if not player:
@@ -1551,6 +1563,8 @@ class MusicBot(discord.Client):
         """
         Deserialize a saved queue for a server into a MusicPlayer.  If no queue is saved, returns None.
         """
+        if not self.config.persistent_queue:
+            return None
 
         if playlist is None:
             playlist = Playlist(self)
