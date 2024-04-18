@@ -33,6 +33,7 @@ from .constants import (
     DEFAULT_DATA_NAME_SERVERS,
     DEFAULT_OWNER_GROUP_NAME,
     DEFAULT_PERMS_GROUP_NAME,
+    DEFAULT_PING_HTTP_URI,
     DEFAULT_PING_SLEEP,
     DEFAULT_PING_TARGET,
     DEFAULT_PING_TIMEOUT,
@@ -145,6 +146,7 @@ class MusicBot(discord.Client):
         self._init_time: float = time.time()
         self._os_signal: Optional[signal.Signals] = None
         self._ping_peer_addr: str = ""
+        self._ping_use_http: bool = True
         self.network_outage: bool = False
         self.on_ready_count: int = 0
         self.init_ok: bool = False
@@ -260,7 +262,7 @@ class MusicBot(discord.Client):
         log.info("Initialized, now connecting to discord.")
         # this creates an output similar to a progress indicator.
         muffle_discord_console_log()
-        self.loop.create_task(self._test_network())
+        self.loop.create_task(self._test_network(), name="MB_PingTest")
 
     async def _test_network(self) -> None:
         """
@@ -286,6 +288,62 @@ class MusicBot(discord.Client):
                 log.warning("Could not resolve ping target.")
                 ping_target = DEFAULT_PING_TARGET
 
+        # Make a ping test using sys ping command or http request.
+        if self._ping_use_http:
+            ping_status = await self._test_network_via_http(ping_target)
+        else:
+            ping_status = await self._test_network_via_ping(ping_target)
+            if self._ping_use_http:
+                ping_status = await self._test_network_via_http(ping_target)
+
+        # Ping success, network up.
+        if ping_status == 0:
+            if self.network_outage:
+                self.on_network_up()
+            self.network_outage = False
+
+        # Ping failed, network down.
+        else:
+            if not self.network_outage:
+                self.on_network_down()
+            self.network_outage = True
+
+        # Sleep before next ping.
+        try:
+            await asyncio.sleep(DEFAULT_PING_SLEEP)
+        except asyncio.exceptions.CancelledError:
+            log.noise("Network ping test cancelled.")  # type: ignore[attr-defined]
+            return
+
+        # set up the next ping task if possible.
+        if self.loop and not self.logout_called:
+            self.loop.create_task(self._test_network(), name="MB_PingTest")
+
+    async def _test_network_via_http(self, ping_target: str) -> int:
+        """
+        This method is used as a fall-back if system ping commands are not available.
+        It will make use of current aiohttp session to make a HEAD request for the
+        given `ping_target` and a file defined by DEFAULT_PING_HTTP_URI.
+        """
+        if not self.session:
+            log.warning("Network testing via HTTP does not have a session to borrow.")
+            # As we cannot test it, assume network is up.
+            return 0
+
+        try:
+            ping_host = f"http://{ping_target}{DEFAULT_PING_HTTP_URI}"
+            async with self.session.head(ping_host, timeout=DEFAULT_PING_TIMEOUT):
+                return 0
+        except (aiohttp.ClientError, asyncio.exceptions.TimeoutError, OSError):
+            return 1
+
+    async def _test_network_via_ping(self, ping_target: str) -> int:
+        """
+        This method constructs a ping command to use as a system call.
+        If ping cannot be found or is not permitted, the fall-back flag
+        will be set by this function, and subsequent ping tests will use
+        HTTP ping testing method instead.
+        """
         # Make a ping call based on OS.
         if not hasattr(self, "_mb_ping_exe_path"):
             ping_path = shutil.which("ping")
@@ -320,14 +378,14 @@ class MusicBot(discord.Client):
                 "\nMusicBot tried the following command:   %s",
                 " ".join(ping_cmd),
             )
-            return
+            return 1
         except PermissionError:
             log.error(
                 "MusicBot was not allowed to execute the `ping` command.  Early network outage detection will not function."
                 "\nMusicBot tried the following command:   %s",
                 " ".join(ping_cmd),
             )
-            return
+            return 1
         except OSError:
             log.error(
                 "Your environment may not allow the `ping` system command.  Early network outage detection will not function."
@@ -335,30 +393,8 @@ class MusicBot(discord.Client):
                 " ".join(ping_cmd),
                 exc_info=self.config.debug_mode,
             )
-            return
-
-        # Ping success, network up.
-        if ping_status == 0:
-            if self.network_outage:
-                self.on_network_up()
-            self.network_outage = False
-
-        # Ping failed, network down.
-        else:
-            if not self.network_outage:
-                self.on_network_down()
-            self.network_outage = True
-
-        # Sleep before next ping.
-        try:
-            await asyncio.sleep(DEFAULT_PING_SLEEP)
-        except asyncio.exceptions.CancelledError:
-            log.noise("Network ping test cancelled.")  # type: ignore[attr-defined]
-            return
-
-        # set up the next ping task if possible.
-        if self.loop and not self.logout_called:
-            self.loop.create_task(self._test_network(), name="MB_PingTest")
+            return 1
+        return ping_status
 
     def on_network_up(self) -> None:
         """
@@ -4416,8 +4452,13 @@ class MusicBot(discord.Client):
 
             # percentage shows how much of the current song has already been played
             percentage = 0.0
-            if player.current_entry.duration and player.current_entry.duration > 0:
-                percentage = player.progress / player.current_entry.duration
+            if (
+                player.current_entry.duration
+                and player.current_entry.duration_td.total_seconds() > 0
+            ):
+                percentage = (
+                    player.progress / player.current_entry.duration_td.total_seconds()
+                )
 
             # create the actual bar
             progress_bar_length = 30
@@ -5022,6 +5063,58 @@ class MusicBot(discord.Client):
                 "Unreasonable volume provided: {}%. Provide a value between 1 and 100.",
             ).format(new_volume),
             expire_in=20,
+        )
+
+    async def cmd_speed(
+        self, player: MusicPlayer, new_speed: str = ""
+    ) -> CommandResponse:
+        """
+        Usage:
+            {command_prefix}speed [rate]
+
+        Apply a speed to the currently playing track.
+        The rate must be between 0.5 and 100.0 due to ffmpeg limits.
+        Stream playback does not support speed adjustments.
+        """
+        if not player.current_entry:
+            raise exceptions.CommandError(
+                "No track is playing, cannot set speed.\n"
+                "Use the config command to set a default playback speed.",
+                expire_in=30,
+            )
+
+        if not isinstance(player.current_entry, URLPlaylistEntry):
+            raise exceptions.CommandError(
+                "Speed cannot be applied to streamed media.",
+                expire_in=30,
+            )
+
+        if not new_speed:
+            raise exceptions.CommandError(
+                "You must provide a speed to set.",
+                expire_in=30,
+            )
+
+        try:
+            speed = float(new_speed)
+            if speed < 0.5 or speed > 100.0:
+                raise ValueError("Value out of range.")
+        except (ValueError, TypeError) as e:
+            raise exceptions.CommandError(
+                "The speed you proivded is invalid. Use a number between 0.5 and 100.",
+                expire_in=30,
+            ) from e
+
+        # Set current playback progress and speed then restart playback.
+        entry = player.current_entry
+        entry.set_start_time(player.progress)
+        entry.set_playback_speed(speed)
+        player.playlist.insert_entry_at_index(0, entry)
+        player.skip()
+
+        return Response(
+            f"Setting playback speed to `{speed:.3f}` for current track.",
+            delete_after=30,
         )
 
     @owner_only
@@ -5639,19 +5732,17 @@ class MusicBot(discord.Client):
 
         await self.safe_delete_message(message, quiet=True)
 
+        # TODO:  add alias names to the command names list here.
+        # cmd_names = await self.gen_cmd_list(message)
+
         def is_possible_command_invoke(entry: discord.Message) -> bool:
-            prefix_list = self.server_data[guild.id].command_prefix_history
-            # The semi-cursed use of [^ -~] should match all kinds of unicode, which could be an issue.
-            # If it is a problem, the best solution is probably adding a dependency for emoji.
-            emoji_regex = re.compile(r"^(<a?:.+:\d+>|:.+:|[^ -~]+) \w+")
+            prefix_list = self.server_data[guild.id].command_prefix_list
             content = entry.content
             for prefix in prefix_list:
-                if entry.content.startswith(prefix):
-                    # emoji prefix may have exactly one space.
-                    if emoji_regex.match(entry.content):
-                        return True
-                    content = content.replace(prefix, "")
-                    if content and not content[0].isspace():
+                if content.startswith(prefix):
+                    content = content.replace(prefix, "", 1).strip()
+                    if content:
+                        # TODO: this should check for command names and alias names.
                         return True
             return False
 
@@ -5908,25 +5999,25 @@ class MusicBot(discord.Client):
                 show loaded groups and list permission options.
 
             {command_prefix}setperms reload
-                reloads permissions from the permissions.ini file
+                reloads permissions from the permissions.ini file.
 
             {command_prefix}setperms add [GroupName]
-                add new group with defaults
+                add new group with defaults.
 
             {command_prefix}setperms remove [GroupName]
-                remove existing group
+                remove existing group.
 
             {command_prefix}setperms help [PermName]
                 show help text for the permission option.
 
-            {command_prefix}setperms show [GroupName]
-                show permission value
+            {command_prefix}setperms show [GroupName] [PermName]
+                show permission value for given group and permission.
 
             {command_prefix}setperms save [GroupName]
                 save permissions group to file.
 
             {command_prefix}setperms set [GroupName] [PermName] [Value]
-                set permission value
+                set permission value for the group.
         """
         if user_mentions:
             raise exceptions.CommandError(
@@ -6018,6 +6109,11 @@ class MusicBot(discord.Client):
         else:
             group_arg = leftover_args.pop(0)
         if option in ["set", "show"]:
+            if not leftover_args:
+                raise exceptions.CommandError(
+                    f"The {option} sub-command requires a group and permission name.",
+                    expire_in=30,
+                )
             option_arg = leftover_args.pop(0)
 
         if user_mentions:
@@ -6038,7 +6134,7 @@ class MusicBot(discord.Client):
             if p_opt is None:
                 option_arg = f"[{group_arg}] > {option_arg}"
                 raise exceptions.CommandError(
-                    f"The option `{option_arg}` is not available.",
+                    f"The permission `{option_arg}` is not available.",
                     expire_in=30,
                 )
             opt = p_opt
@@ -6067,7 +6163,9 @@ class MusicBot(discord.Client):
                 self.permissions.add_group(group_arg)
 
             return Response(
-                f"Successfully added new group:  `{group_arg}`",
+                f"Successfully added new group:  `{group_arg}`\n"
+                f"You can now customizse the permissions with:  `setperms set {group_arg}`\n"
+                f"Make sure to save the new group with:  `setperms save {group_arg}`",
                 delete_after=30,
             )
 
@@ -6081,7 +6179,8 @@ class MusicBot(discord.Client):
                 self.permissions.remove_group(group_arg)
 
             return Response(
-                f"Successfully removed group:  `{group_arg}`",
+                f"Successfully removed group:  `{group_arg}`"
+                f"Make sure to save this change with:  `setperms save {group_arg}`",
                 delete_after=30,
             )
 
@@ -6142,7 +6241,7 @@ class MusicBot(discord.Client):
                 )
             return Response(
                 f"Permission `{opt}` was updated for this session.\n"
-                f"To save the change use `perms save {opt.section} {opt.option}`",
+                f"To save the change use `setperms save {opt.section} {opt.option}`",
                 delete_after=30,
             )
 
@@ -6797,6 +6896,10 @@ class MusicBot(discord.Client):
             log.debug("Got a message with no channel, somehow:  %s", message)
             return
 
+        self_mention = "<@MusicBot>"  # placeholder
+        if self.user:
+            self_mention = f"<@{self.user.id}>"
+
         if message.channel.guild:
             command_prefix = self.server_data[message.channel.guild.id].command_prefix
         else:
@@ -6807,10 +6910,13 @@ class MusicBot(discord.Client):
         emoji_regex = re.compile(r"^(<a?:.+:\d+>|:.+:|[^ -~]+)$")
         if emoji_regex.match(command_prefix):
             message_content = message_content.replace(
-                f"{command_prefix} ", command_prefix
+                f"{command_prefix} ", command_prefix, 1
             )
 
-        if not message_content.startswith(command_prefix):
+        if not message_content.startswith(command_prefix) and (
+            self.config.commands_via_mention
+            and not message_content.startswith(self_mention)
+        ):
             return
 
         if message.author == self.user:
@@ -6832,9 +6938,24 @@ class MusicBot(discord.Client):
             )
             return
 
-        command, *args = message_content.split(
-            " "
-        )  # Uh, doesn't this break prefixes with spaces in them (it doesn't, config parser already breaks them)
+        if self.config.commands_via_mention and message_content.startswith(
+            self_mention
+        ):
+            # replace the space often included after mentions.
+            message_content = message_content.replace(
+                f"{self_mention} ", self_mention, 1
+            )
+            command_prefix = self_mention
+
+        # handle spaces inside of a command prefix.
+        # this is only possible through manual edits to the config.
+        if " " in command_prefix:
+            invalid_prefix = command_prefix
+            command_prefix = command_prefix.replace(" ", "_")
+            message_content = message_content.replace(invalid_prefix, command_prefix, 1)
+
+        # Extract the command name and args from the message content.
+        command, *args = message_content.split(" ")
         command = command[len(command_prefix) :].lower().strip()
 
         # [] produce [''] which is not what we want (it break things)
