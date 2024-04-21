@@ -4544,6 +4544,21 @@ class MusicBot(discord.Client):
             ).format(self.server_data[guild.id].command_prefix),
             delete_after=30,
         )
+    
+    async def cmd_bind(
+            self, author: discord.Member
+    ) -> CommandResponse:
+        """
+        Usage:
+            {command_prefix}bind
+            
+        Bind the bot to a user, useful for large servers where channel changing is common.
+        """
+        # Store the bound user ID in a server-specific dictionary
+        server_id = author.guild.id
+        self.bound_users[server_id] = author.id
+        
+        return Response(f"Successfully bound to {author.name}.")
 
     async def cmd_summon(
         self, guild: discord.Guild, author: discord.Member, message: discord.Message
@@ -7323,87 +7338,93 @@ class MusicBot(discord.Client):
         )
 
     async def on_voice_state_update(
-        self,
-        member: discord.Member,
-        before: discord.VoiceState,
-        after: discord.VoiceState,
+            self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
     ) -> None:
         """
         Event called by discord.py when a VoiceClient changes state in any way.
         https://discordpy.readthedocs.io/en/stable/api.html#discord.on_voice_state_update
         """
         if not self.init_ok:
+            # Ignore updates before initialization is complete
             if self.config.debug_mode:
                 log.warning(
                     "VoiceState updated before on_ready finished"
                 )  # TODO: remove after coverage testing
-            return  # Ignore stuff before ready
+            return
 
         if self.config.leave_inactive_channel:
             guild = member.guild
             event = self.server_data[guild.id].get_event("inactive_vc_timer")
 
             if before.channel and self.user in before.channel.members:
-                if str(before.channel.id) in str(self.config.autojoin_channels):
-                    log.info(
-                        "Ignoring %s in %s as it is a bound voice channel.",
-                        before.channel.name,
-                        before.channel.guild,
-                    )
+                # Handle inactivity if applicable
+                for c in guild.channels:
+                    if c.id in self.config.autojoin_channels:
+                        # Ignore auto-join channels
+                        log.info(
+                            "Ignoring %s in %s as it is a bound voice channel.",
+                            c.name,
+                            guild,
+                        )
+                    elif isinstance(c, discord.VoiceChannel) and is_empty_voice_channel(
+                        c, include_bots=self.config.bot_exception_ids
+                    ):
+                        log.info(
+                            "%s has been detected as empty. Handling timeouts.",
+                            c.name,
+                        )
+                        self.loop.create_task(self.handle_vc_inactivity(guild))
+                        break
 
-                elif is_empty_voice_channel(
-                    before.channel, include_bots=self.config.bot_exception_ids
-                ):
-                    log.info(
-                        "%s has been detected as empty. Handling timeouts.",
-                        before.channel.name,
-                    )
-                    self.loop.create_task(self.handle_vc_inactivity(guild))
             elif after.channel and member != self.user:
+                # Cancel inactivity timer if applicable
                 if self.user in after.channel.members:
                     if event.is_active():
-                        # Added to not spam the console with the message for every person that joins
                         log.info(
                             "A user joined %s, cancelling timer.",
                             after.channel.name,
                         )
                     event.set()
 
-            if (
-                member == self.user and before.channel and after.channel
-            ):  # bot got moved from channel to channel
-                # if not any(not user.bot for user in after.channel.members):
+            if member == self.user and before.channel and after.channel:
+                # Handle bot movement between voice channels
                 if is_empty_voice_channel(
                     after.channel, include_bots=self.config.bot_exception_ids
                 ):
                     log.info(
-                        "The bot got moved and the voice channel %s is empty. Handling timeouts.",
+                        "The bot moved to %s which is empty. Handling timeouts.",
                         after.channel.name,
                     )
                     self.loop.create_task(self.handle_vc_inactivity(guild))
-                else:
-                    if event.is_active():
-                        log.info(
-                            "The bot got moved and the voice channel %s is not empty.",
-                            after.channel.name,
-                        )
-                        event.set()
+                elif event.is_active():
+                    log.info(
+                        "The bot moved to %s which is not empty.",
+                        after.channel.name,
+                    )
+                    event.set()
 
-        # Voice stat updates for bot itself.
-        if member == self.user:
-            # check if bot was disconnected from a voice channel
-            if not after.channel and before.channel and not self.network_outage:
-                if await self._handle_api_disconnect(before):
-                    return
+        # Check if the member is the bot itself or the bound user
+        if member == self.bot.user or (member.guild.id not in self.bound_users or member.id != self.bound_users[member.guild.id]):
+            return
 
-        if before.channel:
-            player = self.get_player_in(before.channel.guild)
+        # Check if the bound user left the voice channel
+        if before.channel and not after.channel:
+            # Handle the case when the bound user leaves the voice channel
+            # Iterate over auto-join channels and get or create player if applicable
+            for c in member.guild.channels:
+                if isinstance(c, discord.VoiceChannel) and c.id in self.config.autojoin_channels:
+                    await self.get_player(c, create=True)
+            return
+
+        # Check if the bound user moved to a different voice channel
+        if before.channel != after.channel:
+            # Get the music player for the server
+            player = await self.get_player(after.channel, create=True)
+
+            # If the player exists, move it to the new channel
             if player:
-                await self._handle_guild_auto_pause(player)
-        if after.channel:
-            player = self.get_player_in(after.channel.guild)
-            if player:
-                await self._handle_guild_auto_pause(player)
+                await player.voice_client.move_to(after.channel)
+
 
     async def _handle_api_disconnect(self, before: discord.VoiceState) -> bool:
         """
