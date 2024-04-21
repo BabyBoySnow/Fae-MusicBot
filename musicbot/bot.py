@@ -4544,20 +4544,18 @@ class MusicBot(discord.Client):
             ).format(self.server_data[guild.id].command_prefix),
             delete_after=30,
         )
-    
-    async def cmd_bind(
-            self, author: discord.Member
-    ) -> CommandResponse:
+
+    async def cmd_bind(self, author: discord.Member) -> CommandResponse:
         """
         Usage:
             {command_prefix}bind
-            
+
         Bind the bot to a user, useful for large servers where channel changing is common.
         """
         # Store the bound user ID in a server-specific dictionary
         server_id = author.guild.id
         self.bound_users[server_id] = author.id
-        
+
         return Response(f"Successfully bound to {author.name}.")
 
     async def cmd_summon(
@@ -7338,7 +7336,10 @@ class MusicBot(discord.Client):
         )
 
     async def on_voice_state_update(
-            self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
+        self,
+        member: discord.Member,
+        before: discord.VoiceState,
+        after: discord.VoiceState,
     ) -> None:
         """
         Event called by discord.py when a VoiceClient changes state in any way.
@@ -7404,7 +7405,10 @@ class MusicBot(discord.Client):
                     event.set()
 
         # Check if the member is the bot itself or the bound user
-        if member == self.bot.user or (member.guild.id not in self.bound_users or member.id != self.bound_users[member.guild.id]):
+        if member == self.bot.user or (
+            member.guild.id not in self.bound_users
+            or member.id != self.bound_users[member.guild.id]
+        ):
             return
 
         # Check if the bound user left the voice channel
@@ -7412,7 +7416,10 @@ class MusicBot(discord.Client):
             # Handle the case when the bound user leaves the voice channel
             # Iterate over auto-join channels and get or create player if applicable
             for c in member.guild.channels:
-                if isinstance(c, discord.VoiceChannel) and c.id in self.config.autojoin_channels:
+                if (
+                    isinstance(c, discord.VoiceChannel)
+                    and c.id in self.config.autojoin_channels
+                ):
                     await self.get_player(c, create=True)
             return
 
@@ -7424,7 +7431,6 @@ class MusicBot(discord.Client):
             # If the player exists, move it to the new channel
             if player:
                 await player.voice_client.move_to(after.channel)
-
 
     async def _handle_api_disconnect(self, before: discord.VoiceState) -> bool:
         """
