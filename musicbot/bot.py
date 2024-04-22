@@ -155,6 +155,7 @@ class MusicBot(discord.Client):
         self.last_status: Optional[discord.BaseActivity] = None
         self.players: Dict[int, MusicPlayer] = {}
         self.autojoinable_channels: Set[VoiceableChannel] = set()
+        self.bound_users: Dict[int, MessageAuthor] = ({},)
 
         self.config = Config(self._config_file)
 
@@ -7414,23 +7415,18 @@ class MusicBot(discord.Client):
         # Check if the bound user left the voice channel
         if before.channel and not after.channel:
             # Handle the case when the bound user leaves the voice channel
-            # Iterate over auto-join channels and get or create player if applicable
-            for c in member.guild.channels:
-                if (
-                    isinstance(c, discord.VoiceChannel)
-                    and c.id in self.config.autojoin_channels
-                ):
-                    await self.get_player(c, create=True)
+            # No need to loop over guild channels, just use the after.channel directly
+            await self.auto_join_channels(after.channel.guild)
             return
 
         # Check if the bound user moved to a different voice channel
         if before.channel != after.channel:
-            # Get the music player for the server
-            player = await self.get_player(after.channel, create=True)
-
             # If the player exists, move it to the new channel
             if player:
                 await player.voice_client.move_to(after.channel)
+
+            # Create a player if it doesn't exist
+            player = await self.get_player(after.channel, create=True)
 
     async def _handle_api_disconnect(self, before: discord.VoiceState) -> bool:
         """
