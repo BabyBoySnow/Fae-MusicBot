@@ -7428,7 +7428,7 @@ class MusicBot(discord.Client):
             # Handle the case when the bound user moved to a different voice channel
             else:
                 # Get the player for the guild
-                player = self.get_player_in(after.channel.guild.id)
+                player = self.get_player_in(after.channel.guild)
 
                 # If the player exists, move it
                 if player:
