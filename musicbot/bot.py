@@ -7406,27 +7406,35 @@ class MusicBot(discord.Client):
                     event.set()
 
         # Check if the member is the bot itself or the bound user
-        if member == self.bot.user or (
+        if member == self.user or (
             member.guild.id not in self.bound_users
             or member.id != self.bound_users[member.guild.id]
         ):
             return
 
-        # Check if the bound user left the voice channel
-        if before.channel and not after.channel:
-            # Handle the case when the bound user leaves the voice channel
-            # No need to loop over guild channels, just use the after.channel directly
-            await self.auto_join_channels(after.channel.guild)
-            return
-
-        # Check if the bound user moved to a different voice channel
+        # Check if the bound user left the voice channel or moved to a different one
         if before.channel != after.channel:
-            # If the player exists, move it to the new channel
-            if player:
-                await player.voice_client.move_to(after.channel)
+            # Handle the case when the bound user leaves the voice channel
+            if not after.channel:
+                auto_join_channel_id = self.config.autojoin_channels.get(member.guild.id)
+                if auto_join_channel_id:
+                    auto_join_channel = member.guild.get_channel(auto_join_channel_id)
+                    if auto_join_channel:
+                        player = await self.get_player(auto_join_channel, create=True)
+                        if player:
+                            await player.voice_client.move_to(auto_join_channel)
+            # Handle the case when the bound user moved to a different voice channel
+            else:
+                # Get the player for the guild
+                player = self.get_player_in(after.channel.guild.id)
 
-            # Create a player if it doesn't exist
-            player = await self.get_player(after.channel, create=True)
+                # If the player exists, move it
+                if player:
+                    await player.voice_client.move_to(after.channel)
+
+                # If the player doesn't exist, create one
+                elif not player:
+                    await self.get_player(channel=after.channel, create=True)
 
     async def _handle_api_disconnect(self, before: discord.VoiceState) -> bool:
         """
