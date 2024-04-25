@@ -155,7 +155,7 @@ class MusicBot(discord.Client):
         self.last_status: Optional[discord.BaseActivity] = None
         self.players: Dict[int, MusicPlayer] = {}
         self.autojoinable_channels: Set[VoiceableChannel] = set()
-        self.bound_users: Dict[int, MessageAuthor] = ({},)
+        self.bound_users: Dict[int, MessageAuthor] = {}
 
         self.config = Config(self._config_file)
 
