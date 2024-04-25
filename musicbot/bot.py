@@ -7415,7 +7415,7 @@ class MusicBot(discord.Client):
         # Check if the bound user left the voice channel or moved to a different one
         if before.channel != after.channel:
             # Handle the case when the bound user leaves the voice channel
-            if not after.channel:
+            if member.guild.id in self.config.autojoin_channels:
                 auto_join_channel_id = self.config.autojoin_channels.get(
                     member.guild.id
                 )
@@ -7425,6 +7425,7 @@ class MusicBot(discord.Client):
                         player = await self.get_player(auto_join_channel, create=True)
                         if player:
                             await player.voice_client.move_to(auto_join_channel)
+
             # Handle the case when the bound user moved to a different voice channel
             else:
                 # Get the player for the guild
