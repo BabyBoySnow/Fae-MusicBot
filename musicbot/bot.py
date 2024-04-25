@@ -7416,7 +7416,9 @@ class MusicBot(discord.Client):
         if before.channel != after.channel:
             # Handle the case when the bound user leaves the voice channel
             if not after.channel:
-                auto_join_channel_id = self.config.autojoin_channels.get(member.guild.id)
+                auto_join_channel_id = self.config.autojoin_channels.get(
+                    member.guild.id
+                )
                 if auto_join_channel_id:
                     auto_join_channel = member.guild.get_channel(auto_join_channel_id)
                     if auto_join_channel:
