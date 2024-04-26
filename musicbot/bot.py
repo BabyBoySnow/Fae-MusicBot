@@ -2223,13 +2223,13 @@ class MusicBot(discord.Client):
 
             # Set guild_autojoin_channels in GuildSpecificData
             for guild in self.guilds:
-                autojoin_channels = {}
                 for ch in vc_chlist:
                     if ch.guild == guild:
-                        autojoin_channels[ch.guild.id] = ch
+                        self.server_data.autojoin_channels[ch.guild.id] = ch
                 await self.server_data[guild.id].set_autojoin_channel(
-                    guild.id, autojoin_channels.get(guild.id)
+                    guild.id, self.server_data.autojoin_channels.get(guild.id)
                 )
+
             else:
                 log.info("Not autojoining any voice channels")
 
