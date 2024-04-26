@@ -94,9 +94,10 @@ class GuildSpecificData:
         self.autojoin_channels: Dict[int, Optional[Union[discord.VoiceChannel, discord.StageChannel]]] = {}
 
         # Populate guild_autojoin_channels based on autojoinable_channels
-        for ch in bot.autojoinable_channels:
-            guild_id = ch.guild.id
-            self.guild_autojoin_channels[guild_id] = ch if ch.guild == guild else None # type: ignore
+        for guild in bot.guilds:
+            for ch in bot.autojoinable_channels:
+                guild_id = ch.guild.id
+                self.guild_autojoin_channels[guild_id] = ch if ch.guild == guild else None 
 
         # create a task to load any persistent guild options.
         # in theory, this should work out fine.
