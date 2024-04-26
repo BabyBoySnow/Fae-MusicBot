@@ -97,7 +97,7 @@ class GuildSpecificData:
         for guild in bot.guilds:
             for ch in bot.autojoinable_channels:
                 guild_id = ch.guild.id
-                self.autojoin_channels[guild_id] = ch if ch.guild == guild else None 
+                self.guild_autojoin_channels[guild_id] = ch if ch.guild == guild else None 
 
         # create a task to load any persistent guild options.
         # in theory, this should work out fine.
