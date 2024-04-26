@@ -2225,10 +2225,8 @@ class MusicBot(discord.Client):
             for guild in self.guilds:
                 for ch in vc_chlist:
                     if ch.guild == guild:
-                        self.server_data.autojoin_channels[ch.guild.id] = ch
-                await self.server_data[guild.id].set_autojoin_channel(
-                    guild.id, self.server_data.autojoin_channels.get(guild.id)
-                )
+                        self.autojoin_channels[ch.guild.id] = ch
+                await self.server_data[guild.id].set_autojoin_channel(guild.id, self.autojoin_channels.get(guild.id))
 
             else:
                 log.info("Not autojoining any voice channels")
@@ -7431,9 +7429,7 @@ class MusicBot(discord.Client):
                     await self._handle_guild_auto_pause(player)
 
                 # reset to default channels
-                await self.server_data[before.channel.guild.id].reset_to_autojoins(
-                    before.channel.guild.id
-                )
+                await self.server_data[before.channel.guild.id].reset_to_autojoins(before.channel.guild.id)
 
             # follow-user has moved to a new channel.
             elif before.channel != after.channel and player:
