@@ -270,11 +270,12 @@ class GuildSpecificData:
         """Move the bot to the auto-join channel for a specific guild."""
         autojoin_channel = self.guild_autojoin_channels.get(guild_id)
         if autojoin_channel:
-            player = self.get_player_in(guild_id)
+            player = # Get the player instance for the guild
             if player:
                 await player.voice_client.move_to(autojoin_channel)
         else:
             log.warning("Auto-join channel not set for guild %s", guild_id)
+
 
 class SkipState:
     __slots__ = ["skippers", "skip_msgs"]
