@@ -2215,8 +2215,13 @@ class MusicBot(discord.Client):
             # Store the channel objects for later use.
             self.autojoinable_channels = vc_chlist
 
+            # log what we're connecting to.
+            if vc_chlist:
+                log.info("Autojoining voice channels:")
+                for ch in vc_chlist:
+                    log.info(" - %s/%s", ch.guild.name.strip(), ch.name.strip())
+
             # Set guild_autojoin_channels in GuildSpecificData
-            print("entering guild auto_join_channels loop")
             for guild in self.guilds:
                 autojoin_channels = {}
                 for ch in vc_chlist:
@@ -2226,13 +2231,6 @@ class MusicBot(discord.Client):
                 await self.server_data[guild.id].set_autojoin_channel(
                     guild.id, autojoin_channels.get(guild.id)
                 )
-            print("exiting guild_auto_join_channels loop")
-
-            # log what we're connecting to.
-            if vc_chlist:
-                log.info("Autojoining voice channels:")
-                for ch in vc_chlist:
-                    log.info(" - %s/%s", ch.guild.name.strip(), ch.name.strip())
             else:
                 log.info("Not autojoining any voice channels")
 
