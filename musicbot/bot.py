@@ -43,6 +43,8 @@ from .constants import (
     EMOJI_IDLE_ICON,
     EMOJI_NEXT_ICON,
     EMOJI_PREV_ICON,
+    FALLBACK_PING_SLEEP,
+    FALLBACK_PING_TIMEOUT,
 )
 from .constants import VERSION as BOTVERSION
 from .constants import VOICE_CLIENT_MAX_RETRY_CONNECT, VOICE_CLIENT_RECONNECT_TIMEOUT
@@ -146,7 +148,7 @@ class MusicBot(discord.Client):
         self._init_time: float = time.time()
         self._os_signal: Optional[signal.Signals] = None
         self._ping_peer_addr: str = ""
-        self._ping_use_http: bool = True
+        self._ping_use_http: bool = False
         self.network_outage: bool = False
         self.on_ready_count: int = 0
         self.init_ok: bool = False
@@ -155,7 +157,6 @@ class MusicBot(discord.Client):
         self.last_status: Optional[discord.BaseActivity] = None
         self.players: Dict[int, MusicPlayer] = {}
         self.autojoinable_channels: Set[VoiceableChannel] = set()
-        self.bound_users: Dict[int, MessageAuthor] = {}
 
         self.config = Config(self._config_file)
 
@@ -311,7 +312,10 @@ class MusicBot(discord.Client):
 
         # Sleep before next ping.
         try:
-            await asyncio.sleep(DEFAULT_PING_SLEEP)
+            if not self._ping_use_http:
+                await asyncio.sleep(DEFAULT_PING_SLEEP)
+            else:
+                await asyncio.sleep(FALLBACK_PING_SLEEP)
         except asyncio.exceptions.CancelledError:
             log.noise("Network ping test cancelled.")  # type: ignore[attr-defined]
             return
@@ -333,7 +337,7 @@ class MusicBot(discord.Client):
 
         try:
             ping_host = f"http://{ping_target}{DEFAULT_PING_HTTP_URI}"
-            async with self.session.head(ping_host, timeout=DEFAULT_PING_TIMEOUT):
+            async with self.session.head(ping_host, timeout=FALLBACK_PING_TIMEOUT):
                 return 0
         except (aiohttp.ClientError, asyncio.exceptions.TimeoutError, OSError):
             return 1
@@ -375,25 +379,34 @@ class MusicBot(discord.Client):
             ping_status = await p.wait()
         except FileNotFoundError:
             log.error(
-                "MusicBot could not locate a `ping` command path.  Early network outage detection will not function."
-                "\nMusicBot tried the following command:   %s",
+                "MusicBot could not locate a `ping` command path.  Will attempt to use HTTP ping instead."
+                "\nMusicBot tried the following command:   %s"
+                "\nYou should enable ping in your system or container environment for best results."
+                "\nAlternatively disable network checking via config.",
                 " ".join(ping_cmd),
             )
+            self._ping_use_http = True
             return 1
         except PermissionError:
             log.error(
-                "MusicBot was not allowed to execute the `ping` command.  Early network outage detection will not function."
-                "\nMusicBot tried the following command:   %s",
+                "MusicBot was denied permission to execute the `ping` command.  Will attempt to use HTTP ping instead."
+                "\nMusicBot tried the following command:   %s"
+                "\nYou should enable ping in your system or container environment for best results."
+                "\nAlternatively disable network checking via config.",
                 " ".join(ping_cmd),
             )
+            self._ping_use_http = True
             return 1
         except OSError:
             log.error(
-                "Your environment may not allow the `ping` system command.  Early network outage detection will not function."
-                "\nMusicBot tried the following command:   %s",
+                "Your environment may not allow the `ping` system command.  Will attempt to use HTTP ping instead."
+                "\nMusicBot tried the following command:   %s"
+                "\nYou should enable ping in your system or container environment for best results."
+                "\nAlternatively disable network checking via config.",
                 " ".join(ping_cmd),
                 exc_info=self.config.debug_mode,
             )
+            self._ping_use_http = True
             return 1
         return ping_status
 
@@ -461,8 +474,6 @@ class MusicBot(discord.Client):
         If self.on_ready_count is 0, it will also run owner auto-summon logic.
         """
         log.info("Checking for channels to auto-join or resume...")
-
-        joined_servers: Set[discord.Guild] = set()
         channel_map = {c.guild: c for c in self.autojoinable_channels}
 
         # Check guilds for a resumable channel, conditionally override with owner summon.
@@ -494,6 +505,12 @@ class MusicBot(discord.Client):
                 channel_map[guild] = guild.me.voice.channel
                 resuming = True
 
+            # Check for follow-user mode on resume.
+            follow_user = self.server_data[guild.id].follow_user
+            if from_resume and follow_user:
+                if follow_user.voice and follow_user.voice.channel:
+                    channel_map[guild] = follow_user.voice.channel
+
             # Check if we should auto-summon to the owner, but only on startup.
             if self.config.auto_summon and not from_resume:
                 owner = self._get_owner_member(server=guild, voice=True)
@@ -515,18 +532,9 @@ class MusicBot(discord.Client):
                     channel_map[guild] = owner.voice.channel
 
         for guild, channel in channel_map.items():
-            if guild in joined_servers:
-                log.info(
-                    'Already joined a channel in "%s", skipping channel:  %s',
-                    guild.name,
-                    channel.name,
-                )
-                continue
 
             if (
-                isinstance(
-                    guild.voice_client, (discord.VoiceClient, discord.StageChannel)
-                )
+                isinstance(guild.voice_client, discord.VoiceClient)
                 and guild.voice_client.is_connected()
             ):
                 log.info(
@@ -1424,8 +1432,6 @@ class MusicBot(discord.Client):
 
         if not player.is_stopped and not player.is_dead:
             player.play(_continue=True)
-
-        await self.update_now_playing_status()
 
     async def on_player_entry_added(
         self,
@@ -2577,11 +2583,6 @@ class MusicBot(discord.Client):
             event.set()
             log.debug("Player activity timer is being reset.")
 
-    async def cmd_syncnp(self) -> None:
-        """
-        Updates the activity status manually. Should be removed later."""
-        await self.update_now_playing_status()
-
     async def cmd_resetplaylist(self, player: MusicPlayer) -> CommandResponse:
         """
         Usage:
@@ -3186,44 +3187,6 @@ class MusicBot(discord.Client):
                 ),
                 expire_in=30,
             )
-
-    async def cmd_ping(self) -> CommandResponse:
-        """
-        Usage:
-            {command_prefix}ping
-
-        Displays the latency between the bot and discord. Relative to expected response time.
-        """
-        e = self._gen_embed()
-        e.title = "Pong"
-        latency = round(self.latency * 1000, 2)
-        e.description = f"\U0001f3d3  {latency}ms"
-        if 0 <= round(self.latency * 1000, 2) < 25:
-            e.colour = discord.Colour.green()
-        elif 25 <= round(self.latency * 1000, 2) < 40:
-            e.colour = discord.Colour.yellow()
-        elif round(self.latency * 1000, 2) > 40:
-            e.colour = discord.Colour.red()
-        return Response(e, delete_after=30)
-
-    async def cmd_pong(self) -> CommandResponse:
-        """
-        Usage:
-            {command_prefix}ping
-
-        Displays the latency between the bot and discord. Relative to expected response time.
-        """
-        e = self._gen_embed()
-        e.title = "Ping"
-        latency = round(self.latency * 1000, 2)
-        e.description = f"\U0001f3d3  {latency}ms"
-        if 0 <= round(self.latency * 1000, 2) < 25:
-            e.colour = discord.Colour.green()
-        elif 25 <= round(self.latency * 1000, 2) < 40:
-            e.colour = discord.Colour.yellow()
-        elif round(self.latency * 1000, 2) > 40:
-            e.colour = discord.Colour.red()
-        return Response(e, delete_after=30)
 
     async def cmd_play(
         self,
@@ -4546,19 +4509,6 @@ class MusicBot(discord.Client):
             delete_after=30,
         )
 
-    async def cmd_bind(self, author: discord.Member) -> CommandResponse:
-        """
-        Usage:
-            {command_prefix}bind
-
-        Bind the bot to a user, useful for large servers where channel changing is common.
-        """
-        # Store the bound user ID in a server-specific dictionary
-        server_id = author.guild.id
-        self.bound_users[server_id] = author.id
-
-        return Response(f"Successfully bound to {author.name}.")
-
     async def cmd_summon(
         self, guild: discord.Guild, author: discord.Member, message: discord.Message
     ) -> CommandResponse:
@@ -4604,6 +4554,48 @@ class MusicBot(discord.Client):
             self.str.get("cmd-summon-reply", "Connected to `{0.name}`").format(
                 author.voice.channel
             ),
+            delete_after=30,
+        )
+
+    async def cmd_follow(
+        self,
+        guild: discord.Guild,
+        author: discord.Member,
+        user_mentions: List[discord.Member],
+    ) -> CommandResponse:
+        """
+        Usage:
+            {command_prefix}follow
+
+        MusicBot will automatically follow a user when they change channels.
+        """
+        # If MusicBot is already following a user, either change user or un-follow.
+        followed_user = self.server_data[guild.id].follow_user
+        if followed_user is not None:
+            # Un-follow current user.
+            if followed_user.id == author.id:
+                self.server_data[guild.id].follow_user = None
+                return Response(
+                    f"No longer following user `{author.name}`",
+                    delete_after=30,
+                )
+
+            # Change to following a new user.
+            self.server_data[guild.id].follow_user = author
+            return Response(
+                f"Now following user `{author.name}` between voice channels.",
+                delete_after=30,
+            )
+
+        # Follow the invoking user.
+        # If owner mentioned a user, bind to the mentioned user instead.
+        bind_to_member = author
+        if author.id == self.config.owner_id and user_mentions:
+            bind_to_member = user_mentions.pop(0)
+
+        self.server_data[guild.id].follow_user = bind_to_member
+        return Response(
+            f"Will follow user `{bind_to_member.name}` between voice channels.",
             delete_after=30,
         )
 
@@ -7347,105 +7339,94 @@ class MusicBot(discord.Client):
         https://discordpy.readthedocs.io/en/stable/api.html#discord.on_voice_state_update
         """
         if not self.init_ok:
-            # Ignore updates before initialization is complete
             if self.config.debug_mode:
                 log.warning(
                     "VoiceState updated before on_ready finished"
                 )  # TODO: remove after coverage testing
-            return
+            return  # Ignore stuff before ready
 
-        if self.config.leave_inactive_channel:
-            guild = member.guild
+        guild = member.guild
+        follow_user = self.server_data[guild.id].follow_user
+
+        if self.config.leave_inactive_channel and not follow_user:
             event = self.server_data[guild.id].get_event("inactive_vc_timer")
 
             if before.channel and self.user in before.channel.members:
-                # Handle inactivity if applicable
-                for c in guild.channels:
-                    if c.id in self.config.autojoin_channels:
-                        # Ignore auto-join channels
-                        log.info(
-                            "Ignoring %s in %s as it is a bound voice channel.",
-                            c.name,
-                            guild,
-                        )
-                    elif isinstance(c, discord.VoiceChannel) and is_empty_voice_channel(
-                        c, include_bots=self.config.bot_exception_ids
-                    ):
-                        log.info(
-                            "%s has been detected as empty. Handling timeouts.",
-                            c.name,
-                        )
-                        self.loop.create_task(self.handle_vc_inactivity(guild))
-                        break
+                if str(before.channel.id) in str(self.config.autojoin_channels):
+                    log.info(
+                        "Ignoring %s in %s as it is a bound voice channel.",
+                        before.channel.name,
+                        before.channel.guild,
+                    )
 
+                elif is_empty_voice_channel(
+                    before.channel, include_bots=self.config.bot_exception_ids
+                ):
+                    log.info(
+                        "%s has been detected as empty. Handling timeouts.",
+                        before.channel.name,
+                    )
+                    self.loop.create_task(self.handle_vc_inactivity(guild))
             elif after.channel and member != self.user:
-                # Cancel inactivity timer if applicable
                 if self.user in after.channel.members:
                     if event.is_active():
+                        # Added to not spam the console with the message for every person that joins
                         log.info(
                             "A user joined %s, cancelling timer.",
                             after.channel.name,
                         )
                     event.set()
 
-            if member == self.user and before.channel and after.channel:
-                # Handle bot movement between voice channels
+            if (
+                member == self.user and before.channel and after.channel
+            ):  # bot got moved from channel to channel
+                # if not any(not user.bot for user in after.channel.members):
                 if is_empty_voice_channel(
                     after.channel, include_bots=self.config.bot_exception_ids
                 ):
                     log.info(
-                        "The bot moved to %s which is empty. Handling timeouts.",
+                        "The bot got moved and the voice channel %s is empty. Handling timeouts.",
                         after.channel.name,
                     )
                     self.loop.create_task(self.handle_vc_inactivity(guild))
-                elif event.is_active():
-                    log.info(
-                        "The bot moved to %s which is not empty.",
-                        after.channel.name,
-                    )
-                    event.set()
+                else:
+                    if event.is_active():
+                        log.info(
+                            "The bot got moved and the voice channel %s is not empty.",
+                            after.channel.name,
+                        )
+                        event.set()
 
-        # Check if the member is the bot itself or the bound user
-        if member == self.user or (
-            member.guild.id not in self.bound_users
-            or member.id != self.bound_users[member.guild.id]
-        ):
-            return
+        # Voice stat updates for bot itself.
+        if member == self.user:
+            # check if bot was disconnected from a voice channel
+            if not after.channel and before.channel and not self.network_outage:
+                if await self._handle_api_disconnect(before):
+                    return
 
-        # Check if the bound user left the voice channel or moved to a different one
-        if before.channel != after.channel:
-            # Handle the case when the bound user leaves the voice channel
-            guild = member.guild
-            for channel in guild.channels:
-                if (
-                    isinstance(channel, discord.VoiceChannel)
-                    and channel.id in self.config.autojoin_channels
-                ):
-                    auto_join_channel_id = self.config.autojoin_channels.get(guild.id)
-                    if auto_join_channel_id:
-                        auto_join_channel = guild.get_channel(auto_join_channel_id)
-                        if auto_join_channel:
-                            player = await self.get_player(
-                                auto_join_channel, create=True
-                            )
-                            if player:
-                                await player.voice_client.move_to(auto_join_channel)
+        if before.channel:
+            player = self.get_player_in(before.channel.guild)
+            if player and not follow_user:
+                await self._handle_guild_auto_pause(player)
+        if after.channel:
+            player = self.get_player_in(after.channel.guild)
+            if player and not follow_user:
+                await self._handle_guild_auto_pause(player)
 
-            # Handle the case when the bound user moved to a different voice channel
-            else:
-                # Get the player for the guild
-                if after.channel:
-                    player = self.get_player_in(after.channel.guild)
-                elif before.channel:
-                    player = self.get_player_in(before.channel.guild)
-
-                # If the player exists, move it
+        if follow_user and member.id == follow_user.id:
+            # follow-user has left the server voice channels.
+            if after.channel is None:
+                log.debug("No longer following user %s", member)
+                self.server_data[member.guild.id].follow_user = None
                 if player:
-                    await player.voice_client.move_to(after.channel)
+                    await self._handle_guild_auto_pause(player)
 
-                # If the player doesn't exist, create one
-                elif not player:
-                    await self.get_player(channel=after.channel, create=True)
+            # follow-user has moved to a new channel.
+            elif before.channel != after.channel and player:
+                log.debug("Following user `%s` to channel:  %s", member, after.channel)
+                player.pause()
+                await player.voice_client.move_to(after.channel)
+                player.resume()
 
     async def _handle_api_disconnect(self, before: discord.VoiceState) -> bool:
         """
