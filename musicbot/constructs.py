@@ -264,24 +264,19 @@ class GuildSpecificData:
 
     async def set_autojoin_channel(self, guild_id: int, channel_id: Optional[int]) -> None:
         """Set the auto-join channel for a specific guild."""
-        guild = self._bot.get_guild(guild_id)
+        guild = self.get_guild(guild_id)
         if guild:
             if channel_id:
-                channel = guild.get_channel(channel_id)
-                if channel:
-                    self.autojoin_channels[guild_id] = channel
-                else:
-                    log.warning("Channel with ID %d not found in guild %d", channel_id, guild_id)
+                autojoin_channel = guild.get_channel(channel_id)
+                self.autojoin_channels[guild_id] = autojoin_channel
             else:
                 self.autojoin_channels[guild_id] = None
-        else:
-            log.warning("Guild with ID %d not found", guild_id)
 
     async def reset_to_autojoins(self, guild_id: int) -> None:
         """Move the bot to the auto-join channel for a specific guild."""
         autojoin_channel = self.autojoin_channels.get(guild_id)
         if autojoin_channel:
-            player = self._bot.get_player_in(guild_id)
+            player = self.get_player_in(guild_id)
             if player:
                 await player.voice_client.move_to(autojoin_channel)
         else:
