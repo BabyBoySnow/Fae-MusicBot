@@ -91,13 +91,15 @@ class GuildSpecificData:
         self.last_np_msg: Optional["discord.Message"] = None
         self.last_played_song_subject: str = ""
         self.follow_user: Optional["discord.Member"] = None
-        self.autojoin_channels: Dict[int, Optional[Union[discord.VoiceChannel, discord.StageChannel]]] = {}
+        self.autojoin_channels: Dict[
+            int, Optional[Union[discord.VoiceChannel, discord.StageChannel]]
+        ] = {}
 
         # Populate guild_autojoin_channels based on autojoinable_channels
         for guild in bot.guilds:
             for ch in bot.autojoinable_channels:
                 guild_id = ch.guild.id
-                self.autojoin_channels[guild_id] = ch if ch.guild == guild else None 
+                self.autojoin_channels[guild_id] = ch if ch.guild == guild else None
 
         # create a task to load any persistent guild options.
         # in theory, this should work out fine.
@@ -262,7 +264,9 @@ class GuildSpecificData:
                     "Failed to serialize guild specific data due to invalid data."
                 )
 
-    async def set_autojoin_channel(self, guild_id: int, channel_id: Optional[int]) -> None:
+    async def set_autojoin_channel(
+        self, guild_id: int, channel_id: Optional[int]
+    ) -> None:
         """Set the auto-join channel for a specific guild."""
         guild = self._bot.get_guild(guild_id)
         if guild:
@@ -271,7 +275,9 @@ class GuildSpecificData:
                 if channel:
                     self.autojoin_channels[guild_id] = channel
                 else:
-                    log.warning("Channel with ID %d not found in guild %d", channel_id, guild_id)
+                    log.warning(
+                        "Channel with ID %d not found in guild %d", channel_id, guild_id
+                    )
             else:
                 self.autojoin_channels[guild_id] = None
         else:
@@ -286,6 +292,7 @@ class GuildSpecificData:
                 await player.voice_client.move_to(autojoin_channel)
         else:
             log.warning("Auto-join channel not set for guild %s", guild_id)
+
 
 class SkipState:
     __slots__ = ["skippers", "skip_msgs"]
