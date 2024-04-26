@@ -7425,10 +7425,10 @@ class MusicBot(discord.Client):
                 default_channels = self.config.autojoin_channels
                 if default_channels:
                     for channel_id in default_channels:
-                    channel = self.get_channel(channel_id)
-                    if channel:
-                        await player.voice_client.move_to(channel)
-                        break
+                        channel = self.get_channel(channel_id)
+                        if channel:
+                            await player.voice_client.move_to(channel)
+                            break
 
 
             # follow-user has moved to a new channel.
