@@ -91,7 +91,6 @@ class GuildSpecificData:
         self.last_np_msg: Optional["discord.Message"] = None
         self.last_played_song_subject: str = ""
         self.follow_user: Optional["discord.Member"] = None
-        self.guild_autojoin_channels: Dict[int, Optional["discord.VoiceChannel"]] = {}
 
         # create a task to load any persistent guild options.
         # in theory, this should work out fine.
@@ -255,26 +254,6 @@ class GuildSpecificData:
                 log.exception(
                     "Failed to serialize guild specific data due to invalid data."
                 )
-
-    async def set_autojoin_channel(self, guild_id: int, channel_id: Optional[int]) -> None:
-        """Set the auto-join channel for a specific guild."""
-        guild = self.get_guild(guild_id)
-        if guild:
-            if channel_id:
-                autojoin_channel = guild.get_channel(channel_id)
-                self.guild_autojoin_channels[guild_id] = autojoin_channel
-            else:
-                self.guild_autojoin_channels[guild_id] = None
-
-    async def reset_to_autojoins(self, guild_id: int) -> None:
-        """Move the bot to the auto-join channel for a specific guild."""
-        autojoin_channel = self.guild_autojoin_channels.get(guild_id)
-        if autojoin_channel:
-            player = # Get the player instance for the guild
-            if player:
-                await player.voice_client.move_to(autojoin_channel)
-        else:
-            log.warning("Auto-join channel not set for guild %s", guild_id)
 
 
 class SkipState:
