@@ -2227,6 +2227,7 @@ class MusicBot(discord.Client):
                 for ch in vc_chlist:
                     if ch.guild == guild:
                         autojoin_channels[ch.guild.id] = ch
+                print(f"Autojoin channels for guild {guild.id}: {autojoin_channels}")
                 await self.server_data[guild.id].set_autojoin_channel(
                     guild.id, autojoin_channels.get(guild.id)
                 )
