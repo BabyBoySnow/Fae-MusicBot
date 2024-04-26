@@ -91,12 +91,7 @@ class GuildSpecificData:
         self.last_np_msg: Optional["discord.Message"] = None
         self.last_played_song_subject: str = ""
         self.follow_user: Optional["discord.Member"] = None
-        self.autojoin_channels: Dict[int, Optional[Union[discord.VoiceChannel, discord.StageChannel]]] = {}
-
-        # Populate guild_autojoin_channels based on autojoinable_channels
-        for ch in bot.autojoinable_channels:
-            guild_id = ch.guild.id
-            self.guild_autojoin_channels[guild_id] = ch if ch.guild == guild else None # type: ignore
+        self.guild_autojoin_channels: Dict[int, Optional["discord.VoiceChannel"]] = {}
 
         # create a task to load any persistent guild options.
         # in theory, this should work out fine.
@@ -267,13 +262,13 @@ class GuildSpecificData:
         if guild:
             if channel_id:
                 autojoin_channel = guild.get_channel(channel_id)
-                self.autojoin_channels[guild_id] = autojoin_channel
+                self.guild_autojoin_channels[guild_id] = autojoin_channel
             else:
-                self.autojoin_channels[guild_id] = None
+                self.guild_autojoin_channels[guild_id] = None
 
     async def reset_to_autojoins(self, guild_id: int) -> None:
         """Move the bot to the auto-join channel for a specific guild."""
-        autojoin_channel = self.autojoin_channels.get(guild_id)
+        autojoin_channel = self.guild_autojoin_channels.get(guild_id)
         if autojoin_channel:
             player = self.get_player_in(guild_id)
             if player:
