@@ -7427,7 +7427,7 @@ class MusicBot(discord.Client):
                     for channel_id in default_channels:
                         channel = self.get_channel(channel_id)
                         if channel:
-                            await player.voice_client.move_to(channel)
+                            await player.voice_client.move_to(channel) #type-ignore=[union-attr]
                             break
 
             # follow-user has moved to a new channel.
