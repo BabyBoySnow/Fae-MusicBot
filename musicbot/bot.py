@@ -7429,7 +7429,7 @@ class MusicBot(discord.Client):
                         if channel:
                             await player.voice_client.move_to(
                                 channel
-                            )  # type-ignore=[union-attr]
+                            )  # type: ignore[union-attr]
                             break
 
             # follow-user has moved to a new channel.
