@@ -7422,7 +7422,7 @@ class MusicBot(discord.Client):
                     await self._handle_guild_auto_pause(player)
 
                 # reset to default channels
-                await self.server_data[before.channel.guild.id].reset_to_autojoins(before.channel.guild.id)
+                await self.server_data[member.guild.id].reset_to_autojoins(member.guild.id)
 
             # follow-user has moved to a new channel.
             elif before.channel != after.channel and player:
