@@ -7424,7 +7424,7 @@ class MusicBot(discord.Client):
                 # reset to default channels
                 default_channels = self.config.autojoin_channels
                 if default_channels:
-                    for channel_id in default_channels
+                    for channel_id in default_channels:
                     channel = self.get_channel(channel_id)
                     if channel:
                         await player.voice_client.move_to(channel)
