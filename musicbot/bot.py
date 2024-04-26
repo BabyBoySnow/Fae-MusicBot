@@ -7430,7 +7430,6 @@ class MusicBot(discord.Client):
                             await player.voice_client.move_to(channel)
                             break
 
-
             # follow-user has moved to a new channel.
             elif before.channel != after.channel and player:
                 log.debug("Following user `%s` to channel:  %s", member, after.channel)
