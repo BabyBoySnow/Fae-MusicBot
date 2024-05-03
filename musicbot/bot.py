@@ -26,11 +26,12 @@ import yt_dlp as youtube_dl  # type: ignore[import-untyped]
 
 from . import downloader, exceptions
 from .aliases import Aliases, AliasesDefault
+from .autoplaylist import AutoPlaylistManager
 from .config import Config, ConfigDefaults
 from .constants import (
-    DEFAULT_DATA_NAME_CUR_SONG,
-    DEFAULT_DATA_NAME_QUEUE,
-    DEFAULT_DATA_NAME_SERVERS,
+    DATA_FILE_SERVERS,
+    DATA_GUILD_FILE_CUR_SONG,
+    DATA_GUILD_FILE_QUEUE,
     DEFAULT_OWNER_GROUP_NAME,
     DEFAULT_PERMS_GROUP_NAME,
     DEFAULT_PING_HTTP_URI,
@@ -49,7 +50,7 @@ from .constants import (
 from .constants import VERSION as BOTVERSION
 from .constants import VOICE_CLIENT_MAX_RETRY_CONNECT, VOICE_CLIENT_RECONNECT_TIMEOUT
 from .constructs import GuildSpecificData, Response
-from .entry import StreamPlaylistEntry, URLPlaylistEntry
+from .entry import LocalFilePlaylistEntry, StreamPlaylistEntry, URLPlaylistEntry
 from .filecache import AudioFileCache
 from .json import I18nJson
 from .opus_loader import load_opus_lib
@@ -64,9 +65,7 @@ from .utils import (
     format_size_from_bytes,
     format_song_duration,
     format_time_to_seconds,
-    instance_diff,
     is_empty_voice_channel,
-    load_file,
     muffle_discord_console_log,
     mute_discord_console_log,
     owner_only,
@@ -107,16 +106,14 @@ MessageAuthor = Union[
     discord.User,
     discord.Member,
 ]
-EntryTypes = Union[URLPlaylistEntry, StreamPlaylistEntry]
+EntryTypes = Union[URLPlaylistEntry, StreamPlaylistEntry, LocalFilePlaylistEntry]
 CommandResponse = Union[Response, None]
 
 
 log = logging.getLogger(__name__)
 
-# TODO:  Add historic auto playlist feature, save any song that is played (not skipped)
-# TODO:  Add multiple playlists, switch by name.
-# TOOD:  Add option to make plalists server-specific where desired.
-# TODO:  Add feature to handle "file://" URIs and map them to a static folder.
+# TODO:  add an aliases command to manage command aliases.
+# TODO:  maybe allow aliases to contain whole/partial commands.
 
 
 class MusicBot(discord.Client):
@@ -167,18 +164,11 @@ class MusicBot(discord.Client):
         if self.config.usealias:
             self.aliases = Aliases(aliases_file)
 
-        self.autoplaylist = load_file(self.config.auto_playlist_file)
+        self.playlist_mgr = AutoPlaylistManager(self)
 
         self.aiolocks: DefaultDict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self.filecache = AudioFileCache(self)
         self.downloader = downloader.Downloader(self)
-
-        if not self.autoplaylist:
-            log.warning("Autoplaylist is empty, disabling.")
-            self.config.auto_playlist = False
-        else:
-            log.info("Loaded autoplaylist with %s entries", len(self.autoplaylist))
-            self.filecache.load_autoplay_cachemap()
 
         # Factory function for server specific data objects.
         def server_factory() -> GuildSpecificData:
@@ -199,6 +189,9 @@ class MusicBot(discord.Client):
 
     async def setup_hook(self) -> None:
         """async init phase that is called by d.py before login."""
+        if self.config.enable_queue_history_global:
+            await self.playlist_mgr.global_history.load()
+
         self.http.user_agent = f"MusicBot/{BOTVERSION}"
         if self.use_certifi:
             ssl_ctx = ssl.create_default_context(cafile=certifi.where())
@@ -654,105 +647,6 @@ class MusicBot(discord.Client):
             expire_in=30,
         )
 
-    async def remove_url_from_autoplaylist(
-        self,
-        song_url: str,
-        *,
-        ex: Optional[Exception] = None,
-        delete_from_ap: bool = False,
-    ) -> None:
-        """
-        Handle clearing the given `song_url` from the autoplaylist queue,
-        and optionally from the configured autoplaylist file.
-
-        :param: ex:  an exception that is given as the reason for removal.
-        :param: delete_from_ap:  should the configured list file be updated?
-        """
-        if song_url not in self.autoplaylist:
-            log.debug('URL "%s" not in autoplaylist, ignoring', song_url)
-            return
-
-        async with self.aiolocks["autoplaylist_update_lock"]:
-            self.autoplaylist.remove(song_url)
-            log.info(
-                "Removing%s song from session autoplaylist: %s",
-                " unplayable" if ex and not isinstance(ex, UserWarning) else "",
-                song_url,
-            )
-
-            if not self.config.auto_playlist_removed_file.is_file():
-                self.config.auto_playlist_removed_file.touch(exist_ok=True)
-
-            try:
-                with open(
-                    self.config.auto_playlist_removed_file, "a", encoding="utf8"
-                ) as f:
-                    ctime = time.ctime()
-                    # add 10 spaces to line up with # Reason:
-                    e_str = str(ex).replace("\n", "\n#" + " " * 10)
-                    url = song_url
-                    sep = "#" * 32
-                    f.write(
-                        f"# Entry removed {ctime}\n"
-                        f"# URL:  {url}\n"
-                        f"# Reason: {e_str}\n"
-                        f"\n{sep}\n\n"
-                    )
-            except (OSError, PermissionError, FileNotFoundError, IsADirectoryError):
-                log.exception(
-                    "Could not log information about the playlist URL removal."
-                )
-
-            if delete_from_ap:
-                log.info("Updating autoplaylist file...")
-
-                def _filter_replace(line: str, url: str) -> str:
-                    target = line.strip()
-                    if target == url:
-                        return f"# Removed # {url}"
-                    return line
-
-                # read the original file in and update lines with the URL.
-                # this is done to preserve the comments and formatting.
-                try:
-                    apl = pathlib.Path(self.config.auto_playlist_file)
-                    data = apl.read_text(encoding="utf8").split("\n")
-                    data = [_filter_replace(x, song_url) for x in data]
-                    text = "\n".join(data)
-                    apl.write_text(text, encoding="utf8")
-                except (OSError, PermissionError, FileNotFoundError):
-                    log.exception("Failed to save autoplaylist file.")
-                self.filecache.remove_autoplay_cachemap_entry_by_url(song_url)
-
-    async def add_url_to_autoplaylist(self, song_url: str) -> None:
-        """
-        Add the given `song_url` to the auto playlist file and in-memory
-        list.  Does not update the player's current autoplaylist queue.
-        """
-        if song_url in self.autoplaylist:
-            log.debug("URL already in autoplaylist, ignoring")
-            return
-
-        async with self.aiolocks["autoplaylist_update_lock"]:
-            # Note, this does not update the player's copy of the list.
-            self.autoplaylist.append(song_url)
-            log.info("Adding new URL to autoplaylist: %s", song_url)
-
-            try:
-                # append to the file to preserve its formatting.
-                with open(self.config.auto_playlist_file, "r+", encoding="utf8") as fh:
-                    lines = fh.readlines()
-                    if not lines:
-                        lines.append("# MusicBot Auto Playlist\n")
-                    if lines[-1].endswith("\n"):
-                        lines.append(f"{song_url}\n")
-                    else:
-                        lines.append(f"\n{song_url}\n")
-                    fh.seek(0)
-                    fh.writelines(lines)
-            except (OSError, PermissionError, FileNotFoundError):
-                log.exception("Failed to save autoplaylist file.")
-
     async def generate_invite_link(
         self,
         *,
@@ -865,6 +759,8 @@ class MusicBot(discord.Client):
                 ) from e
 
         # TODO: look into Stage channel handling and test this at some point.
+        # It is likely that we'll want to respond to a voice state update instead
+        # to make sure manually moving a bot to a StageChannel gives it speaker.
         if isinstance(channel, discord.StageChannel):
             try:
                 await channel.guild.me.edit(suppress=False)
@@ -1091,11 +987,10 @@ class MusicBot(discord.Client):
         await self.reset_player_inactivity(player)
         await self.update_now_playing_status()
         # manage the cache since we may have downloaded something.
-        self.filecache.handle_new_cache_entry(entry)
+        if isinstance(entry, URLPlaylistEntry):
+            self.filecache.handle_new_cache_entry(entry)
         player.skip_state.reset()
 
-        # This is the one event where it's ok to serialize autoplaylist entries
-        # TODO:  we can prevent it with: if entry.from_auto_playlist:
         await self.serialize_queue(player.voice_client.channel.guild)
 
         if self.config.write_current_song:
@@ -1116,6 +1011,15 @@ class MusicBot(discord.Client):
                     title=entry.title,
                     author=entry.author.name,
                 )
+
+                # handle history playlist updates.
+                guild = player.voice_client.guild
+                if (
+                    self.config.enable_queue_history_global
+                    or self.config.enable_queue_history_guilds
+                ):
+                    self.server_data[guild.id].current_playing_url = ""
+
                 player.skip()
             elif self.config.now_playing_mentions:
                 newmsg = self.str.get(
@@ -1143,7 +1047,15 @@ class MusicBot(discord.Client):
                 "Now playing automatically added entry {title} in {channel}!",
             ).format(title=entry.title, channel=player.voice_client.channel.name)
 
+        # handle history playlist updates.
         guild = player.voice_client.guild
+        if (
+            self.config.enable_queue_history_global
+            or self.config.enable_queue_history_guilds
+        ) and not entry.from_auto_playlist:
+            log.debug("Setting URL history guild %s == %s", guild.id, entry.url)
+            self.server_data[guild.id].current_playing_url = entry.url
+
         last_np_msg = self.server_data[guild.id].last_np_msg
         np_channel: Optional[MessageableChannel] = None
         if newmsg:
@@ -1269,6 +1181,18 @@ class MusicBot(discord.Client):
             log.debug("Logout under way, ignoring this event.")
             return
 
+        # handle history playlist updates.
+        guild = player.voice_client.guild
+        last_played_url = self.server_data[guild.id].current_playing_url
+        if self.config.enable_queue_history_global and last_played_url:
+            await self.playlist_mgr.global_history.add_track(last_played_url)
+
+        if self.config.enable_queue_history_guilds and last_played_url:
+            history = await self.server_data[guild.id].get_played_history()
+            if history is not None:
+                await history.add_track(last_played_url)
+        self.server_data[guild.id].current_playing_url = ""
+
         if not player.voice_client.is_connected():
             log.debug(
                 "VoiceClient says it is not connected, nothing else we can do here."
@@ -1330,19 +1254,23 @@ class MusicBot(discord.Client):
             and not player.current_entry
             and self.config.auto_playlist
         ):
-            # NOTE:  self.autoplaylist will only contain links loaded from the file.
+            # NOTE:  self.server_data[].autoplaylist will only contain links loaded from the file.
             #  while player.autoplaylist may contain links expanded from playlists.
             #  the only issue is that links from a playlist might fail and fire
             #  remove event, but no link will be removed since none will match.
             if not player.autoplaylist:
-                if not self.autoplaylist:
-                    log.warning("No playable songs in the autoplaylist, disabling.")
+                if not self.server_data[guild.id].autoplaylist:
+                    log.warning(
+                        "No playable songs in the Guild autoplaylist, disabling."
+                    )
                     self.config.auto_playlist = False
                 else:
                     log.debug(
                         "No content in current autoplaylist. Filling with new music..."
                     )
-                    player.autoplaylist = list(self.autoplaylist)
+                    player.autoplaylist = list(
+                        self.server_data[player.voice_client.guild.id].autoplaylist
+                    )
 
             while player.autoplaylist:
                 if self.config.auto_playlist_random:
@@ -1351,6 +1279,19 @@ class MusicBot(discord.Client):
                 else:
                     song_url = player.autoplaylist[0]
                 player.autoplaylist.remove(song_url)
+
+                # Check if song is blocked.
+                if (
+                    self.config.song_blocklist_enabled
+                    and self.config.song_blocklist.is_blocked(song_url)
+                ):
+                    if self.config.auto_playlist_remove_on_block:
+                        await self.server_data[guild.id].autoplaylist.remove_track(
+                            song_url,
+                            ex=UserWarning("Found in song block list."),
+                            delete_from_ap=True,
+                        )
+                    continue
 
                 try:
                     info = await self.downloader.extract_info(
@@ -1364,7 +1305,7 @@ class MusicBot(discord.Client):
                         e,
                     )
 
-                    await self.remove_url_from_autoplaylist(
+                    await self.server_data[guild.id].autoplaylist.remove_track(
                         song_url, ex=e, delete_from_ap=self.config.remove_ap
                     )
                     continue
@@ -1380,7 +1321,7 @@ class MusicBot(discord.Client):
                         exc_info=True,
                     )
 
-                    await self.remove_url_from_autoplaylist(
+                    await self.server_data[guild.id].autoplaylist.remove_track(
                         song_url, ex=e, delete_from_ap=self.config.remove_ap
                     )
                     continue
@@ -1428,12 +1369,12 @@ class MusicBot(discord.Client):
                     continue
                 break
 
-            if not self.autoplaylist:
+            if not self.server_data[guild.id].autoplaylist:
                 log.warning("No playable songs in the autoplaylist, disabling.")
                 self.config.auto_playlist = False
 
         else:  # Don't serialize for autoplaylist events
-            await self.serialize_queue(player.voice_client.channel.guild)
+            await self.serialize_queue(guild)
 
         if not player.is_stopped and not player.is_dead:
             player.play(_continue=True)
@@ -1519,6 +1460,24 @@ class MusicBot(discord.Client):
         paused = sum(1 for p in self.players.values() if p.is_paused)
         total = len(self.players)
 
+        def format_status_msg(player: Optional[MusicPlayer]) -> str:
+            msg = self.config.status_message
+            msg = msg.replace("{n_playing}", str(playing))
+            msg = msg.replace("{n_paused}", str(paused))
+            msg = msg.replace("{n_connected}", str(total))
+            if player and player.current_entry:
+                msg = msg.replace("{p0_title}", player.current_entry.title)
+                msg = msg.replace(
+                    "{p0_length}",
+                    format_song_duration(player.current_entry.duration_td),
+                )
+                msg = msg.replace("{p0_url}", player.current_entry.url)
+            else:
+                msg = msg.replace("{p0_title}", "")
+                msg = msg.replace("{p0_length}", "")
+                msg = msg.replace("{p0_url}", "")
+            return msg
+
         # multiple servers are playing or paused.
         if total > 1:
             if paused > playing:
@@ -1526,7 +1485,12 @@ class MusicBot(discord.Client):
 
             text = f"music on {total} servers"
             if self.config.status_message:
-                text = self.config.status_message
+                player = None
+                for p in self.players.values():
+                    if p.is_playing:
+                        player = p
+                        break
+                text = format_status_msg(player)
 
             activity = discord.Activity(
                 type=discord.ActivityType.playing,
@@ -1539,7 +1503,7 @@ class MusicBot(discord.Client):
             if player.current_entry:
                 text = player.current_entry.title.strip()[:128]
                 if self.config.status_message:
-                    text = self.config.status_message
+                    text = format_status_msg(player)
 
                 activity = discord.Activity(
                     type=discord.ActivityType.streaming,
@@ -1553,7 +1517,7 @@ class MusicBot(discord.Client):
             if player.current_entry:
                 text = player.current_entry.title.strip()[:128]
                 if self.config.status_message:
-                    text = self.config.status_message
+                    text = format_status_msg(player)
 
                 status = discord.Status.idle
                 activity = discord.Activity(
@@ -1566,7 +1530,7 @@ class MusicBot(discord.Client):
         else:
             text = f" ~ {EMOJI_IDLE_ICON} ~ "
             if self.config.status_message:
-                text = self.config.status_message
+                text = format_status_msg(None)
 
             status = discord.Status.idle
             activity = discord.CustomActivity(
@@ -1582,6 +1546,14 @@ class MusicBot(discord.Client):
                 )
                 await self.change_presence(status=status, activity=activity)
                 self.last_status = activity
+                # Discord docs say Game status can only be updated 5 times in 20 seconds.
+                # This sleep should maintain the above lock for long enough to space
+                # out the status updates in multi-guild setups.
+                # If not, we should use the lock to ignore further updates.
+                try:
+                    await asyncio.sleep(4)
+                except asyncio.CancelledError:
+                    pass
 
     async def serialize_queue(self, guild: discord.Guild) -> None:
         """
@@ -1594,7 +1566,7 @@ class MusicBot(discord.Client):
         if not player:
             return
 
-        path = self.config.data_path.joinpath(str(guild.id), DEFAULT_DATA_NAME_QUEUE)
+        path = self.config.data_path.joinpath(str(guild.id), DATA_GUILD_FILE_QUEUE)
 
         async with self.aiolocks["queue_serialization" + ":" + str(guild.id)]:
             log.debug("Serializing queue for %s", guild.id)
@@ -1617,7 +1589,7 @@ class MusicBot(discord.Client):
         if playlist is None:
             playlist = Playlist(self)
 
-        path = self.config.data_path.joinpath(str(guild.id), DEFAULT_DATA_NAME_QUEUE)
+        path = self.config.data_path.joinpath(str(guild.id), DATA_GUILD_FILE_QUEUE)
 
         async with self.aiolocks["queue_serialization:" + str(guild.id)]:
             if not path.is_file():
@@ -1638,7 +1610,7 @@ class MusicBot(discord.Client):
         if not player:
             return
 
-        path = self.config.data_path.joinpath(str(guild.id), DEFAULT_DATA_NAME_CUR_SONG)
+        path = self.config.data_path.joinpath(str(guild.id), DATA_GUILD_FILE_CUR_SONG)
 
         async with self.aiolocks["current_song:" + str(guild.id)]:
             log.debug("Writing current song for %s", guild.id)
@@ -2240,7 +2212,7 @@ class MusicBot(discord.Client):
         # we do this after the config stuff because it's a lot easier to notice here
         if self.config.register.ini_missing_options:
             missing_list = "\n".join(
-                str(o) for o in self.config.register.ini_missing_options
+                sorted(str(o) for o in self.config.register.ini_missing_options)
             )
             conf_warn = exceptions.HelpfulError(
                 preface="Detected missing config options!",
@@ -2305,7 +2277,7 @@ class MusicBot(discord.Client):
         for guild in self.guilds:
             self.config.data_path.joinpath(str(guild.id)).mkdir(exist_ok=True)
 
-        names_path = self.config.data_path.joinpath(DEFAULT_DATA_NAME_SERVERS)
+        names_path = self.config.data_path.joinpath(DATA_FILE_SERVERS)
         with open(names_path, "w", encoding="utf8") as f:
             for guild in sorted(self.guilds, key=lambda s: int(s.id)):
                 f.write(f"{guild.id}: {guild.name}\n")
@@ -2589,14 +2561,16 @@ class MusicBot(discord.Client):
             event.set()
             log.debug("Player activity timer is being reset.")
 
-    async def cmd_resetplaylist(self, player: MusicPlayer) -> CommandResponse:
+    async def cmd_resetplaylist(
+        self, guild: discord.Guild, player: MusicPlayer
+    ) -> CommandResponse:
         """
         Usage:
             {command_prefix}resetplaylist
 
         Resets all songs in the server's autoplaylist
         """
-        player.autoplaylist = list(set(self.autoplaylist))
+        player.autoplaylist = list(self.server_data[guild.id].autoplaylist)
         return Response(
             self.str.get("cmd-resetplaylist-response", "\N{OK HAND SIGN}"),
             delete_after=15,
@@ -2803,6 +2777,7 @@ class MusicBot(discord.Client):
 
     async def cmd_blocksong(
         self,
+        guild: discord.Guild,
         _player: Optional[MusicPlayer],
         option: str,
         leftover_args: List[str],
@@ -2860,7 +2835,11 @@ class MusicBot(discord.Client):
                 and song_subject == _player.current_entry.url
                 and _player.current_entry.from_auto_playlist
             ):
-                await self.remove_url_from_autoplaylist(song_subject)
+                await self.server_data[guild.id].autoplaylist.remove_track(
+                    song_subject,
+                    ex=UserWarning("Removed and added to block list."),
+                    delete_from_ap=True,
+                )
 
             async with self.aiolocks["song_blocklist"]:
                 self.config.song_blocklist.append_items([song_subject])
@@ -2915,6 +2894,7 @@ class MusicBot(discord.Client):
 
     async def cmd_autoplaylist(
         self,
+        guild: discord.Guild,
         author: discord.Member,
         _player: Optional[MusicPlayer],
         option: str,
@@ -2923,23 +2903,38 @@ class MusicBot(discord.Client):
         """
         Usage:
             {command_prefix}autoplaylist [ + | - | add | remove] [url]
+                Adds or removes the specified song or currently playing song to/from the current playlist.
 
-        Adds or removes the specified song or currently playing song to/from the playlist.
+            {command_prefix}autoplaylist show
+                Show a list of existing playlist files.
+
+            {command_prefix}autoplaylist set [playlist.txt]
+                Set a playlist as default for this guild and reloads the guild auto playlist.
         """
-        url = self._get_song_url_or_none(opt_url, _player)
-
-        if not url:
+        option = option.lower()
+        if option not in ["+", "-", "add", "remove", "show", "set"]:
             raise exceptions.CommandError(
-                self.str.get(
-                    "cmd-autoplaylist-invalid", "The supplied song link is invalid"
-                ),
-                expire_in=20,
+                "You must provide one of the following options:  `add`, `remove`, `show`, or `set`",
+                expire_in=30,
             )
 
+        def _get_url() -> str:
+            url = self._get_song_url_or_none(opt_url, _player)
+
+            if not url:
+                raise exceptions.CommandError(
+                    self.str.get(
+                        "cmd-autoplaylist-invalid", "The supplied song link is invalid"
+                    ),
+                    expire_in=20,
+                )
+            return url
+
         if option in ["+", "add"]:
+            url = _get_url()
             self._do_song_blocklist_check(url)
-            if url not in self.autoplaylist:
-                await self.add_url_to_autoplaylist(url)
+            if url not in self.server_data[guild.id].autoplaylist:
+                await self.server_data[guild.id].autoplaylist.add_track(url)
                 return Response(
                     self.str.get(
                         "cmd-save-success", "Added <{0}> to the autoplaylist."
@@ -2955,8 +2950,9 @@ class MusicBot(discord.Client):
             )
 
         if option in ["-", "remove"]:
-            if url in self.autoplaylist:
-                await self.remove_url_from_autoplaylist(
+            url = _get_url()
+            if url in self.server_data[guild.id].autoplaylist:
+                await self.server_data[guild.id].autoplaylist.remove_track(
                     url,
                     ex=UserWarning(
                         f"Removed by command from user:  {author.id}/{author.name}#{author.discriminator}"
@@ -2969,13 +2965,51 @@ class MusicBot(discord.Client):
                     ).format(url),
                     delete_after=35,
                 )
-
             raise exceptions.CommandError(
                 self.str.get(
                     "cmd-unsave-does-not-exist",
                     "This song is not yet in the autoplaylist.",
                 ),
                 expire_in=20,
+            )
+
+        if option == "show":
+            self.playlist_mgr.discover_playlists()
+            names = "\n".join([f"`{pl}`" for pl in self.playlist_mgr.playlist_names])
+            return Response(
+                f"**Available Playlists:**\n{names}",
+                delete_after=40,
+            )
+
+        if option == "set":
+            if not opt_url:
+                raise exceptions.CommandError(
+                    "You must provide a playlist filename.",
+                    expire_in=30,
+                )
+
+            # Add file extension if one was not given.
+            if not opt_url.lower().endswith(".txt"):
+                opt_url += ".txt"
+
+            # Update the server specific data.
+            pl = self.playlist_mgr.get_playlist(opt_url)
+            self.server_data[guild.id].autoplaylist = pl
+            await self.server_data[guild.id].save_guild_options_file()
+            await pl.load()
+
+            # Update the player copy if needed.
+            if _player and self.config.auto_playlist:
+                _player.autoplaylist = list(pl)
+
+            new_msg = ""
+            if not self.playlist_mgr.playlist_exists(opt_url):
+                new_msg = (
+                    "\nThis playlist is new, you must add songs to save it to disk!"
+                )
+            return Response(
+                f"The playlist for this server has been updated to: `{opt_url}`{new_msg}",
+                delete_after=30,
             )
 
         raise exceptions.CommandError(
@@ -3350,7 +3384,7 @@ class MusicBot(discord.Client):
         )
 
     async def cmd_seek(
-        self, _player: Optional[MusicPlayer], seek_time: str = ""
+        self, guild: discord.Guild, _player: Optional[MusicPlayer], seek_time: str = ""
     ) -> CommandResponse:
         """
         Usage:
@@ -3372,7 +3406,9 @@ class MusicBot(discord.Client):
                 expire_in=30,
             )
 
-        if not isinstance(_player.current_entry, URLPlaylistEntry):
+        if not isinstance(
+            _player.current_entry, (URLPlaylistEntry, LocalFilePlaylistEntry)
+        ):
             raise exceptions.CommandError(
                 "Seeking is not supported for streams.",
                 expire_in=30,
@@ -3409,6 +3445,14 @@ class MusicBot(discord.Client):
         entry = _player.current_entry
         entry.set_start_time(f_seek_time)
         _player.playlist.insert_entry_at_index(0, entry)
+
+        # handle history playlist updates.
+        if (
+            self.config.enable_queue_history_global
+            or self.config.enable_queue_history_guilds
+        ):
+            self.server_data[guild.id].current_playing_url = ""
+
         _player.skip()
 
         return Response(
@@ -3751,6 +3795,13 @@ class MusicBot(discord.Client):
                 f"Use {prefix}summon to summon it to your voice channel."
             )
 
+        if not self.config.enable_local_media and song_url.lower().startswith(
+            "file://"
+        ):
+            raise exceptions.CommandError(
+                "Local media playback is not enabled.",
+            )
+
         # Validate song_url is actually a URL, or otherwise a search string.
         valid_song_url = self.downloader.get_url_or_none(song_url)
         if valid_song_url:
@@ -3770,7 +3821,14 @@ class MusicBot(discord.Client):
                 head,
             )
 
-        if not valid_song_url and leftover_args:
+        if (
+            not valid_song_url
+            and leftover_args
+            and not (
+                self.config.enable_local_media
+                and song_url.lower().startswith("file://")
+            )
+        ):
             # treat all arguments as a search string.
             song_url = " ".join([song_url, *leftover_args])
             leftover_args = []  # prevent issues later.
@@ -3939,6 +3997,14 @@ class MusicBot(discord.Client):
             # shift the playing track to the end of queue and skip current playback.
             elif skip_playing and player.is_playing and player.current_entry:
                 player.playlist.entries.append(player.current_entry)
+
+                # handle history playlist updates.
+                if (
+                    self.config.enable_queue_history_global
+                    or self.config.enable_queue_history_guilds
+                ):
+                    self.server_data[guild.id].current_playing_url = ""
+
                 player.skip()
 
                 position = self.str.get("cmd-play-next", "Up next!")
@@ -4626,7 +4692,8 @@ class MusicBot(discord.Client):
             return Response(
                 self.str.get("cmd-pause-reply", "Paused music in `{0.name}`").format(
                     player.voice_client.channel
-                )
+                ),
+                delete_after=30,
             )
 
         raise exceptions.CommandError(
@@ -4828,6 +4895,7 @@ class MusicBot(discord.Client):
 
     async def cmd_skip(
         self,
+        guild: discord.Guild,
         player: MusicPlayer,
         author: discord.Member,
         message: discord.Message,
@@ -4899,6 +4967,13 @@ class MusicBot(discord.Client):
                     )
                 )
 
+            # handle history playlist updates.
+            if (
+                self.config.enable_queue_history_global
+                or self.config.enable_queue_history_guilds
+            ):
+                self.server_data[guild.id].current_playing_url = ""
+
             if player.repeatsong:
                 player.repeatsong = False
             player.skip()
@@ -4962,8 +5037,13 @@ class MusicBot(discord.Client):
             if player.repeatsong:
                 player.repeatsong = False
 
-            # check autopause stuff here
-            # @TheerapakG: Check for pausing state in the player.py make more sense
+            # handle history playlist updates.
+            if (
+                self.config.enable_queue_history_global
+                or self.config.enable_queue_history_guilds
+            ):
+                self.server_data[guild.id].current_playing_url = ""
+
             player.skip()
             return Response(
                 self.str.get(
@@ -5086,7 +5166,7 @@ class MusicBot(discord.Client):
         )
 
     async def cmd_speed(
-        self, player: MusicPlayer, new_speed: str = ""
+        self, guild: discord.Guild, player: MusicPlayer, new_speed: str = ""
     ) -> CommandResponse:
         """
         Usage:
@@ -5103,7 +5183,9 @@ class MusicBot(discord.Client):
                 expire_in=30,
             )
 
-        if not isinstance(player.current_entry, URLPlaylistEntry):
+        if not isinstance(
+            player.current_entry, (URLPlaylistEntry, LocalFilePlaylistEntry)
+        ):
             raise exceptions.CommandError(
                 "Speed cannot be applied to streamed media.",
                 expire_in=30,
@@ -5130,6 +5212,14 @@ class MusicBot(discord.Client):
         entry.set_start_time(player.progress)
         entry.set_playback_speed(speed)
         player.playlist.insert_entry_at_index(0, entry)
+
+        # handle history playlist updates.
+        if (
+            self.config.enable_queue_history_global
+            or self.config.enable_queue_history_guilds
+        ):
+            self.server_data[guild.id].current_playing_url = ""
+
         player.skip()
 
         return Response(
@@ -5270,8 +5360,28 @@ class MusicBot(discord.Client):
                 ) from e
 
         # sub commands beyond here need 2 leftover_args
-        if option in ["help", "show", "save"]:
-            if len(leftover_args) < 2:
+        if option in ["help", "show", "save", "set"]:
+            largs = len(leftover_args)
+            if self.config.register.resolver_available and (
+                (option == "set" and largs < 3) or largs < 2
+            ):
+                # assume that section is omitted.
+                possible_sections = self.config.register.get_sections_from_option(
+                    leftover_args[0]
+                )
+                if len(possible_sections) == 0:
+                    raise exceptions.CommandError(
+                        "Could not resolve section name from option name. Please provide a valid section and option name.",
+                        expire_in=30,
+                    )
+                if len(possible_sections) > 1:
+                    raise exceptions.CommandError(
+                        "The option given is ambiguous, please provide a section name.",
+                        expire_in=30,
+                    )
+                # adjust the command arguments to include the resolved section.
+                leftover_args = [list(possible_sections)[0]] + leftover_args
+            elif largs < 2 or (option == "set" and largs < 3):
                 raise exceptions.CommandError(
                     "You must provide a section name and option name for this command.",
                     expire_in=30,
@@ -5381,7 +5491,9 @@ class MusicBot(discord.Client):
         return None
 
     @owner_only
-    async def cmd_option(self, option: str, value: str) -> CommandResponse:
+    async def cmd_option(
+        self, guild: discord.Guild, option: str, value: str
+    ) -> CommandResponse:
         """
         Usage:
             {command_prefix}option [option] [on/y/enabled/off/n/disabled]
@@ -5420,7 +5532,7 @@ class MusicBot(discord.Client):
                         )
                     )
 
-                if not self.autoplaylist:
+                if not self.server_data[guild.id].autoplaylist:
                     raise exceptions.CommandError(
                         self.str.get(
                             "cmd-option-autoplaylist-none",
@@ -6897,14 +7009,6 @@ class MusicBot(discord.Client):
             delete_after=30,
         )
 
-    async def cmd_testready(self, channel: MessageableChannel) -> CommandResponse:
-        # TODO: remove this. :)
-        """
-        Not a real command, and will be removed in the future.
-        """
-        await self.safe_send_message(channel, "!!RUN_TESTS!!", expire_in=30)
-        return None
-
     async def on_message(self, message: discord.Message) -> None:
         """
         Event called by discord.py when any message is sent to/around the bot.
@@ -7649,47 +7753,41 @@ class MusicBot(discord.Client):
         Event called by discord.py when guild properties are updated.
         https://discordpy.readthedocs.io/en/stable/api.html#discord.on_guild_update
         """
-        log.info("Guild update for:  %s", before)
-        diff = instance_diff(before, after)
-        for attr, vals in diff.items():
-            log.everythinng(  # type: ignore[attr-defined]
-                "Guild Update - attribute '%s' is now:  %s  -- was:  %s",
-                attr,
-                vals[0],
-                vals[1],
-            )
-
-        # TODO: replace this with utils.objdiff() or remove both
-        for name in set(getattr(before, "__slotnames__")):
-            a_val = getattr(after, name, None)
-            b_val = getattr(before, name, None)
-            if b_val != a_val:
-                log.everything(  # type: ignore[attr-defined]
-                    f"Guild attribute {name} is now: {a_val}  -- Was: {b_val}"
-                )
+        if log.getEffectiveLevel() <= logging.EVERYTHING:  # type: ignore[attr-defined]
+            log.info("Guild update for:  %s", before)
+            for name in set(getattr(before, "__slotnames__")):
+                a_val = getattr(after, name, None)
+                b_val = getattr(before, name, None)
+                if b_val != a_val:
+                    log.everything(  # type: ignore[attr-defined]
+                        f"Guild attribute {name} is now: {a_val}  -- Was: {b_val}"
+                    )
 
     async def on_guild_channel_update(
-        self, before: discord.abc.GuildChannel, after: discord.abc.GuildChannel
+        self, before: GuildMessageableChannels, after: GuildMessageableChannels
     ) -> None:
         """
         Event called by discord.py when a guild channel is updated.
         https://discordpy.readthedocs.io/en/stable/api.html#discord.on_guild_channel_update
         """
-        log.info("Channel update for:  %s", before)
-        diff = instance_diff(before, after)
-        for attr, vals in diff.items():
-            log.everythinng(  # type: ignore[attr-defined]
-                "Guild Channel Update - attribute '%s' is now:  %s  -- was:  %s",
-                attr,
-                vals[0],
-                vals[1],
-            )
+        # This allows us to log when certain channel properties are changed.
+        # Mostly for information sake at current.
+        changes = ""
+        if before.name != after.name:
+            changes += f" name = {after.name}"
+        if isinstance(
+            before, (discord.VoiceChannel, discord.StageChannel)
+        ) and isinstance(after, (discord.VoiceChannel, discord.StageChannel)):
+            # Splitting hairs, but we could pause playback here until voice update later.
+            if before.rtc_region != after.rtc_region:
+                changes += f" voice-region = {after.rtc_region}"
+            if before.bitrate != after.bitrate:
+                changes += f" bitrate = {after.bitrate}"
+            if before.user_limit != after.user_limit:
+                changes += f" user-limit = {after.user_limit}"
+        # The chat delay is not currently respected by MusicBot. Is this a problem?
+        if before.slowmode_delay != after.slowmode_delay:
+            changes += f" slowmode = {after.slowmode_delay}"
 
-        # TODO: replace this with objdiff() or remove both.
-        for name in set(getattr(before, "__slotnames__")):
-            a_val = getattr(after, name, None)
-            b_val = getattr(before, name, None)
-            if b_val != a_val:
-                log.everything(  # type: ignore[attr-defined]
-                    f"Channel attribute {name} is now: {a_val}  -- Was: {b_val}"
-                )
+        if changes:
+            log.info("Channel update for:  %s  --  %s", before, changes)
