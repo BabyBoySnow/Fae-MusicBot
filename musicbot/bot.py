@@ -44,6 +44,7 @@ from .constants import (
     EMOJI_IDLE_ICON,
     EMOJI_NEXT_ICON,
     EMOJI_PREV_ICON,
+    EMOJI_STOP_SIGN,
     FALLBACK_PING_SLEEP,
     FALLBACK_PING_TIMEOUT,
 )
@@ -106,6 +107,7 @@ MessageAuthor = Union[
     discord.User,
     discord.Member,
 ]
+UserMentions = List[Union[discord.Member, discord.User]]
 EntryTypes = Union[URLPlaylistEntry, StreamPlaylistEntry, LocalFilePlaylistEntry]
 CommandResponse = Union[Response, None]
 
@@ -2683,26 +2685,42 @@ class MusicBot(discord.Client):
 
     async def cmd_blockuser(
         self,
-        user_mentions: List[discord.Member],
+        user_mentions: UserMentions,
         option: str,
+        leftover_args: List[str],
     ) -> CommandResponse:
         """
         Usage:
-            {command_prefix}blockuser [ + | - | add | remove ] @UserName [@UserName2 ...]
+            {command_prefix}blockuser [ + | - | ? | add | remove | status ] @UserName [@UserName2 ...]
 
         Manage users in the block list.
         Blocked users are forbidden from using all bot commands.
         """
 
-        if not user_mentions:
-            raise exceptions.CommandError("No users listed.", expire_in=20)
+        if not user_mentions and not leftover_args:
+            raise exceptions.CommandError(
+                "You must mention a user or provide their ID number.",
+                expire_in=20,
+            )
 
-        if option not in ["+", "-", "add", "remove"]:
+        if option not in ["+", "-", "?", "add", "remove", "status"]:
             raise exceptions.CommandError(
                 self.str.get(
                     "cmd-blacklist-invalid",
                     'Invalid option "{0}" specified, use +, -, add, or remove',
                 ).format(option),
+                expire_in=20,
+            )
+
+        for p_user in leftover_args:
+            if p_user.isdigit():
+                u = self.get_user(int(p_user))
+                if u:
+                    user_mentions.append(u)
+
+        if not user_mentions:
+            raise exceptions.CommandError(
+                "MusicBot could not find the user(s) you specified.",
                 expire_in=20,
             )
 
@@ -2763,6 +2781,18 @@ class MusicBot(discord.Client):
                 ),
                 reply=True,
                 delete_after=10,
+            )
+
+        if option in ["?", "status"]:
+            ustatus = ""
+            for user in user_mentions:
+                blocked = "not blocked"
+                if self.config.user_blocklist.is_blocked(user):
+                    blocked = "blocked"
+                ustatus += f"User: `{user.name}` is {blocked}\n"
+            return Response(
+                f"**Block list status:**\n{ustatus}\n{status_msg}",
+                delete_after=30,
             )
 
         async with self.aiolocks["user_blocklist"]:
@@ -2868,7 +2898,7 @@ class MusicBot(discord.Client):
         )
 
     async def cmd_id(
-        self, author: discord.Member, user_mentions: List[discord.Member]
+        self, author: discord.Member, user_mentions: UserMentions
     ) -> CommandResponse:
         """
         Usage:
@@ -3391,6 +3421,7 @@ class MusicBot(discord.Client):
             {command_prefix}seek [time]
 
         Restarts the current song at the given time.
+        If time starts with + or - seek will be relative to current playback time.
         Time should be given in seconds, fractional seconds are accepted.
         Due to codec specifics in ffmpeg, this may not be accurate.
         """
@@ -3420,9 +3451,15 @@ class MusicBot(discord.Client):
                 expire_in=30,
             )
 
+        relative_seek: int = 0
         f_seek_time: float = 0
         if "." in seek_time:
             try:
+                if seek_time.startswith("-"):
+                    relative_seek = -1
+                if seek_time.startswith("+"):
+                    relative_seek = 1
+
                 p1, p2 = seek_time.rsplit(".", maxsplit=1)
                 i_seek_time = format_time_to_seconds(p1)
                 f_seek_time = float(f"0.{p2}")
@@ -3435,7 +3472,10 @@ class MusicBot(discord.Client):
         else:
             f_seek_time = 0.0 + format_time_to_seconds(seek_time)
 
-        if f_seek_time > _player.current_entry.duration:
+        if relative_seek != 0:
+            f_seek_time = _player.progress + (relative_seek * f_seek_time)
+
+        if f_seek_time > _player.current_entry.duration or f_seek_time < 0:
             td = format_song_duration(_player.current_entry.duration_td)
             raise exceptions.CommandError(
                 f"Cannot seek to `{seek_time}` in the current track with a length of `{td}`",
@@ -4416,19 +4456,24 @@ class MusicBot(discord.Client):
                         user == message.author and reaction.message.id in res_msg_ids
                     )  # why can't these objs be compared directly?
 
-                reactions = ["\u2705", "\U0001F6AB", "\U0001F3C1"]
+                reactions = [
+                    EMOJI_CHECK_MARK_BUTTON,
+                    EMOJI_CROSS_MARK_BUTTON,
+                    EMOJI_STOP_SIGN,
+                ]
                 for r in reactions:
                     await result_message.add_reaction(r)
 
                 try:
                     reaction, _user = await self.wait_for(
-                        "reaction_add", timeout=30.0, check=check_react
+                        "reaction_add", timeout=60.0, check=check_react
                     )
                 except asyncio.TimeoutError:
                     await self.safe_delete_message(result_message)
                     return None
 
-                if str(reaction.emoji) == "\u2705":  # check
+                if str(reaction.emoji) == EMOJI_CHECK_MARK_BUTTON:  # check
+                    # play the next and respond, stop the search entry loop.
                     await self.safe_delete_message(result_message)
                     await self.cmd_play(
                         message,
@@ -4445,14 +4490,14 @@ class MusicBot(discord.Client):
                         delete_after=30,
                     )
 
-                if str(reaction.emoji) == "\U0001F6AB":  # cross
+                if str(reaction.emoji) == EMOJI_CROSS_MARK_BUTTON:  # cross
+                    # delete last result and move on to next
                     await self.safe_delete_message(result_message)
-                else:
+                else:  # stop
+                    # delete last result and stop showing results.
                     await self.safe_delete_message(result_message)
-
-        return Response(
-            self.str.get("cmd-search-decline", "Oh well :("), delete_after=30
-        )
+                    break
+        return None
 
     async def cmd_np(
         self,
@@ -4639,7 +4684,7 @@ class MusicBot(discord.Client):
         self,
         guild: discord.Guild,
         author: discord.Member,
-        user_mentions: List[discord.Member],
+        user_mentions: UserMentions,
     ) -> CommandResponse:
         """
         Usage:
@@ -4671,7 +4716,13 @@ class MusicBot(discord.Client):
         # If owner mentioned a user, bind to the mentioned user instead.
         bind_to_member = author
         if author.id == self.config.owner_id and user_mentions:
-            bind_to_member = user_mentions.pop(0)
+            m = user_mentions.pop(0)
+            if not isinstance(m, discord.Member):
+                raise exceptions.CommandError(
+                    "MusicBot cannot follow a user that is not a member of the server.",
+                    expire_in=30,
+                )
+            bind_to_member = m
 
         self.server_data[guild.id].follow_user = bind_to_member
         return Response(
@@ -4784,7 +4835,7 @@ class MusicBot(discord.Client):
 
     async def cmd_remove(
         self,
-        user_mentions: List[discord.Member],
+        user_mentions: UserMentions,
         author: discord.Member,
         permissions: PermissionGroup,
         guild: discord.Guild,
@@ -5230,7 +5281,7 @@ class MusicBot(discord.Client):
     @owner_only
     async def cmd_config(
         self,
-        user_mentions: List[discord.Member],
+        user_mentions: UserMentions,
         channel_mentions: List[discord.abc.GuildChannel],
         option: str,
         leftover_args: List[str],
@@ -6073,7 +6124,7 @@ class MusicBot(discord.Client):
         self,
         author: discord.Member,
         channel: MessageableChannel,
-        user_mentions: List[discord.Member],
+        user_mentions: UserMentions,
         guild: discord.Guild,
         permissions: PermissionGroup,
         target: str = "",
@@ -6123,7 +6174,7 @@ class MusicBot(discord.Client):
     @owner_only
     async def cmd_setperms(
         self,
-        user_mentions: List[discord.Member],
+        user_mentions: UserMentions,
         leftover_args: List[str],
         option: str = "list",
     ) -> CommandResponse:
@@ -7202,12 +7253,21 @@ class MusicBot(discord.Client):
 
             # this arg only works in guilds.
             if params.pop("user_mentions", None):
-                if message.guild:
-                    handler_kwargs["user_mentions"] = list(
-                        map(message.guild.get_member, message.raw_mentions)
-                    )
-                else:
-                    handler_kwargs["user_mentions"] = []
+
+                def member_or_user(
+                    uid: int,
+                ) -> Optional[Union[discord.Member, discord.User]]:
+                    if message.guild:
+                        m = message.guild.get_member(uid)
+                        if m:
+                            return m
+                    return self.get_user(uid)
+
+                handler_kwargs["user_mentions"] = []
+                for um_id in message.raw_mentions:
+                    m = member_or_user(um_id)
+                    if m is not None:
+                        handler_kwargs["user_mentions"].append(m)
 
             # this arg only works in guilds.
             if params.pop("channel_mentions", None):
@@ -7579,27 +7639,34 @@ class MusicBot(discord.Client):
             return False
 
         o_guild = self.get_guild(before.channel.guild.id)
-        # These conditions are usually met when a user disconnects bot via menus.
-        if (
-            o_guild is not None
-            and o_guild.id in self.players
-            and isinstance(o_guild.voice_client, discord.VoiceClient)
-            and not o_guild.voice_client.is_connected()
+        o_vc: Optional[discord.VoiceClient] = None
+        close_code: Optional[int] = None
+        state: Optional[Any] = None
+        if o_guild is not None and isinstance(
+            o_guild.voice_client, discord.VoiceClient
         ):
-            log.info(
-                "MusicBot was disconnected from the voice channel, likely by a user."
+            o_vc = o_guild.voice_client
+            # borrow this for logging sake.
+            close_code = (
+                o_vc._connection.ws._close_code  # pylint: disable=protected-access
             )
-            await self.disconnect_voice_client(o_guild)
-            return True
+            state = o_vc._connection.state  # pylint: disable=protected-access
 
         # These conditions are met when API terminates a voice client.
+        # This could be a user initiated disconnect, but we have no way to tell.
+        # Normally VoiceClients should auto-reconnect. However attempting to wait
+        # by using VoiceClient.wait_until_connected() never seems to resolve.
         if (
             o_guild is not None
+            and ((o_vc and not o_vc.is_connected()) or o_vc is None)
             and o_guild.id in self.players
-            and o_guild.voice_client is None
         ):
             log.info(
-                "MusicBot was disconnected from the voice channel, likely by Discord API."
+                "Disconnected from voice by Discord API in: %s/%s (Code: %s) [S:%s]",
+                o_guild.name,
+                before.channel.name,
+                close_code,
+                state.name.upper() if state else None,
             )
             await self.disconnect_voice_client(o_guild)
 
@@ -7707,13 +7774,6 @@ class MusicBot(discord.Client):
         log.info('Guild "%s" has become available.', guild.name)
 
         player = self.get_player_in(guild)
-
-        """
-        if player and player.voice_client and not player.voice_client.is_connected():
-            # TODO: really test this, I hope and pray I need not bother here...
-            log.warning("MusicBot has a MusicPlayer with no VoiceClient!")
-            return
-        #"""
 
         if player and player.is_paused and player.guild_or_net_unavailable:
             log.debug(
