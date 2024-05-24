@@ -5313,6 +5313,9 @@ class MusicBot(discord.Client):
             {command_prefix}config set [Section] [Option] [value]
                 Validates the option and sets the config for the session, but not to file.
 
+            {command_prefix}config reset [Section] [Option]
+                Resets an option to it's default value if possible.
+
         This command allows management of MusicBot config options file.
         """
         if user_mentions and channel_mentions:
@@ -5331,6 +5334,7 @@ class MusicBot(discord.Client):
             "show",
             "set",
             "reload",
+            "reset",
         ]
         if option not in valid_options:
             raise exceptions.CommandError(
@@ -5538,6 +5542,36 @@ class MusicBot(discord.Client):
                 )
             return Response(
                 f"Option `{opt}` was updated for this session.\n"
+                f"To save the change use `config save {opt.section} {opt.option}`",
+                delete_after=30,
+            )
+        
+
+        #reset an option to default value as defined in ConfigDefaults
+        if option == "reset":
+            if not opt.editable:
+                raise exceptions.CommandError(
+                    f"Option `{opt}` is not editable. Cannot reset to default.",
+                    expire_in=30,
+                )
+
+            default_value = getattr(ConfigDefaults, opt.option, None)
+            if default_value is None:
+                raise exceptions.CommandError(
+                    f"No default value found for option `{opt}`.",
+                    expire_in=30,
+                )
+
+            log.debug("Resetting %s to default %s", opt, default_value)
+            async with self.aiolocks["config_update"]:
+                updated = self.config.update_option(opt, default_value)
+            if not updated:
+                raise exceptions.CommandError(
+                    f"Option `{opt}` was not reset to default!",
+                    expire_in=30,
+                )
+            return Response(
+                f"Option `{opt}` was reset to its default value `{default_value}`.\n"
                 f"To save the change use `config save {opt.section} {opt.option}`",
                 delete_after=30,
             )
