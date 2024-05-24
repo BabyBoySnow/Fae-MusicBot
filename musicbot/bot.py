@@ -5545,9 +5545,8 @@ class MusicBot(discord.Client):
                 f"To save the change use `config save {opt.section} {opt.option}`",
                 delete_after=30,
             )
-        
 
-        #reset an option to default value as defined in ConfigDefaults
+        # reset an option to default value as defined in ConfigDefaults
         if option == "reset":
             if not opt.editable:
                 raise exceptions.CommandError(
@@ -5555,12 +5554,17 @@ class MusicBot(discord.Client):
                     expire_in=30,
                 )
 
-            default_value = getattr(ConfigDefaults, opt.option)
-            if default_value is None:
-                raise exceptions.CommandError(
-                    f"No default value found for option `{opt}`.",
-                    expire_in=30,
-                )
+            # Use the default value from the option object
+            default_value = opt.default
+
+            # Handle different types of default values
+            if isinstance(default_value, set):
+                # If the default is a blank set, represent it as an empty string
+                default_value = ",".join(default_value) if default_value else ""
+            elif isinstance(default_value, pathlib.Path):
+                default_value = str(default_value)
+            elif not isinstance(default_value, str):
+                default_value = str(default_value)
 
             log.debug("Resetting %s to default %s", opt, default_value)
             async with self.aiolocks["config_update"]:
