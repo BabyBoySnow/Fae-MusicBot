@@ -725,6 +725,7 @@ class MusicBot(discord.Client):
         max_timeout = VOICE_CLIENT_RECONNECT_TIMEOUT * VOICE_CLIENT_MAX_RETRY_CONNECT
         attempts = 0
         while True:
+            log.everything("MusicPlayer connection looping...")
             attempts += 1
             timeout = attempts * VOICE_CLIENT_RECONNECT_TIMEOUT
             if timeout > max_timeout:
@@ -1217,6 +1218,7 @@ class MusicBot(discord.Client):
         # avoid downloading the next entries if the user is absent and we are configured to skip.
         notice_sent = False  # set a flag to avoid message spam.
         while True:
+            log.everything("Loop1 in on_player_finished_playing...")
             next_entry = player.playlist.peek()
 
             if not next_entry:
@@ -1275,6 +1277,7 @@ class MusicBot(discord.Client):
                     )
 
             while player.autoplaylist:
+                log.everything("Loop2 in on_player_finished_playing - APL loop...")
                 if self.config.auto_playlist_random:
                     random.shuffle(player.autoplaylist)
                     song_url = random.choice(player.autoplaylist)
@@ -1864,9 +1867,9 @@ class MusicBot(discord.Client):
         # method used to periodically check for a signal, and process it.
         async def check_windows_signal() -> None:
             while True:
+                
                 if self.logout_called:
                     break
-
                 if self._os_signal is None:
                     try:
                         await asyncio.sleep(1)
@@ -3230,6 +3233,9 @@ class MusicBot(discord.Client):
 
         This function should not be called from _cmd_play().
         """
+        if not self.config.auto_unpause_on_play:
+            return
+
         if not player or not player.voice_client or not player.voice_client.channel:
             return
 
@@ -3425,6 +3431,7 @@ class MusicBot(discord.Client):
         Time should be given in seconds, fractional seconds are accepted.
         Due to codec specifics in ffmpeg, this may not be accurate.
         """
+        # TODO: perhaps a means of listing chapters and seeking to them. like `seek ch1` & `seek list`
         if not _player or not _player.current_entry:
             raise exceptions.CommandError(
                 "Cannot use seek if there is nothing playing.",
@@ -4094,9 +4101,7 @@ class MusicBot(discord.Client):
 
         await self._do_cmd_unpause_check(_player, channel, author, message)
 
-        if _player:
-            player = _player
-        elif permissions.summonplay:
+        if permissions.summonplay:
             response = await self.cmd_summon(guild, author, message)
             if response:
                 if self.config.embeds:
@@ -4120,9 +4125,9 @@ class MusicBot(discord.Client):
                     )
                 p = self.get_player_in(guild)
                 if p:
-                    player = p
+                    _player = p
 
-        if not player:
+        if not _player:
             prefix = self.server_data[guild.id].command_prefix
             raise exceptions.CommandError(
                 "The bot is not in a voice channel.  "
@@ -4131,7 +4136,7 @@ class MusicBot(discord.Client):
 
         if (
             permissions.max_songs
-            and player.playlist.count_for_user(author) >= permissions.max_songs
+            and _player.playlist.count_for_user(author) >= permissions.max_songs
         ):
             raise exceptions.PermissionsError(
                 self.str.get(
@@ -4141,7 +4146,7 @@ class MusicBot(discord.Client):
                 expire_in=30,
             )
 
-        if player.karaoke_mode and not permissions.bypass_karaoke_mode:
+        if _player.karaoke_mode and not permissions.bypass_karaoke_mode:
             raise exceptions.PermissionsError(
                 self.str.get(
                     "karaoke-enabled",
@@ -4175,7 +4180,7 @@ class MusicBot(discord.Client):
             if info.url != info.title:
                 self._do_song_blocklist_check(info.title)
 
-            await player.playlist.add_stream_from_info(
+            await _player.playlist.add_stream_from_info(
                 info, channel=channel, author=author, head=False
             )
 
@@ -6135,8 +6140,9 @@ class MusicBot(discord.Client):
         Sends the user a list of their permissions, or the permissions of the user specified.
         """
 
+        user: Optional[MessageAuthor] = None
         if user_mentions:
-            user = user_mentions[0]  # type: Union[discord.User, discord.Member]
+            user = user_mentions[0]
 
         if not user_mentions and not target:
             user = author
@@ -6146,14 +6152,19 @@ class MusicBot(discord.Client):
             if getuser is None:
                 try:
                     user = await self.fetch_user(int(target))
-                except (discord.NotFound, ValueError):
-                    return Response(
-                        "Invalid user ID or server nickname, please double check all typing and try again.",
-                        reply=False,
-                        delete_after=30,
-                    )
+                except (discord.NotFound, ValueError) as e:
+                    raise exceptions.CommandError(
+                        "Invalid user ID or server nickname, please double check the ID and try again.",
+                        expire_in=30,
+                    ) from e
             else:
                 user = getuser
+
+        if not user:
+            raise exceptions.CommandError(
+                "Could not determine the discord User.  Try again.",
+                expire_in=30,
+            )
 
         permissions = self.permissions.for_user(user)
 
@@ -6982,6 +6993,20 @@ class MusicBot(discord.Client):
             delete_after=60,
         )
 
+    async def cmd_uptime(self) -> CommandResponse:
+        """
+        Usage:
+            {command_prefix}uptime
+
+        Displays the MusicBot uptime, since last start/restart.
+        """
+        uptime = time.time() - self._init_time
+        delta = format_song_duration(uptime)
+        return Response(
+            f"MusicBot has been up for `{delta}`",
+            delete_after=30,
+        )
+
     @owner_only
     async def cmd_botlatency(self) -> CommandResponse:
         """
@@ -7032,20 +7057,6 @@ class MusicBot(discord.Client):
         sl = self.latency * 1000
         return Response(
             f"**API Latency:** `{sl:.0f} ms`{voice_lat}",
-            delete_after=30,
-        )
-
-    async def cmd_uptime(self) -> CommandResponse:
-        """
-        Usage:
-            {command_prefix}uptime
-
-        Displays the MusicBot uptime, since last start/restart.
-        """
-        uptime = time.time() - self._init_time
-        delta = format_song_duration(uptime)
-        return Response(
-            f"MusicBot has been up for `{delta}`",
             delete_after=30,
         )
 
