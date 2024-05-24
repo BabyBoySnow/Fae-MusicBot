@@ -5416,7 +5416,7 @@ class MusicBot(discord.Client):
                 ) from e
 
         # sub commands beyond here need 2 leftover_args
-        if option in ["help", "show", "save", "set"]:
+        if option in ["help", "show", "save", "set", "reset"]:
             largs = len(leftover_args)
             if (
                 self.config.register.resolver_available
@@ -5555,7 +5555,7 @@ class MusicBot(discord.Client):
                     expire_in=30,
                 )
 
-            default_value = getattr(ConfigDefaults, opt.option, None)
+            default_value = getattr(ConfigDefaults, opt.option)
             if default_value is None:
                 raise exceptions.CommandError(
                     f"No default value found for option `{opt}`.",
