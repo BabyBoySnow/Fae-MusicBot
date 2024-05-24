@@ -5560,11 +5560,14 @@ class MusicBot(discord.Client):
             # Handle different types of default values
             if isinstance(default_value, set):
                 # If the default is a blank set, represent it as an empty string
-                default_value = ",".join(default_value) if default_value else ""
+                default_value = ",".join(default_value) if default_value else "" # type: ignore
             elif isinstance(default_value, pathlib.Path):
                 default_value = str(default_value)
             elif not isinstance(default_value, str):
                 default_value = str(default_value)
+
+            # Prepare a user-friendly message for the reset operation
+            reset_value_display = default_value if default_value else "an empty set"
 
             log.debug("Resetting %s to default %s", opt, default_value)
             async with self.aiolocks["config_update"]:
@@ -5575,7 +5578,7 @@ class MusicBot(discord.Client):
                     expire_in=30,
                 )
             return Response(
-                f"Option `{opt}` was reset to its default value `{default_value}`.\n"
+                f"Option `{opt}` was reset to its default value `{reset_value_display}`.\n"
                 f"To save the change use `config save {opt.section} {opt.option}`",
                 delete_after=30,
             )
