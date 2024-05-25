@@ -5555,16 +5555,7 @@ class MusicBot(discord.Client):
                 )
 
             # Use the default value from the option object
-            default_value = opt.default
-
-            # Handle different types of default values
-            if isinstance(default_value, set):
-                # If the default is a blank set, represent it as an empty string
-                default_value = ",".join(default_value) if default_value else ""  # type: ignore
-            elif isinstance(default_value, pathlib.Path):
-                default_value = str(default_value)
-            elif not isinstance(default_value, str):
-                default_value = str(default_value)
+            default_value = self.config.register.to_ini(opt)
 
             # Prepare a user-friendly message for the reset operation
             reset_value_display = default_value if default_value else "an empty set"
