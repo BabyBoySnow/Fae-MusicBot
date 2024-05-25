@@ -5555,7 +5555,7 @@ class MusicBot(discord.Client):
                 )
 
             # Use the default value from the option object
-            default_value = self.config.register.to_ini(opt)
+            default_value = self.config.register.to_ini(opt, use_default=True)
 
             # Prepare a user-friendly message for the reset operation
             reset_value_display = default_value if default_value else "an empty set"
