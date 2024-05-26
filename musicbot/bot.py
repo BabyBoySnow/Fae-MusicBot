@@ -5558,6 +5558,7 @@ class MusicBot(discord.Client):
             default_value = self.config.register.to_ini(opt, use_default=True)
 
             # Prepare a user-friendly message for the reset operation
+            # TODO look into option registry display code for use here
             reset_value_display = default_value if default_value else "an empty set"
 
             log.debug("Resetting %s to default %s", opt, default_value)
