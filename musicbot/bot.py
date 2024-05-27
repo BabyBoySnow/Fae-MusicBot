@@ -725,6 +725,7 @@ class MusicBot(discord.Client):
         max_timeout = VOICE_CLIENT_RECONNECT_TIMEOUT * VOICE_CLIENT_MAX_RETRY_CONNECT
         attempts = 0
         while True:
+            log.everything("MusicPlayer connection looping...")
             attempts += 1
             timeout = attempts * VOICE_CLIENT_RECONNECT_TIMEOUT
             if timeout > max_timeout:
@@ -1217,6 +1218,7 @@ class MusicBot(discord.Client):
         # avoid downloading the next entries if the user is absent and we are configured to skip.
         notice_sent = False  # set a flag to avoid message spam.
         while True:
+            log.everything("Loop1 in on_player_finished_playing...")
             next_entry = player.playlist.peek()
 
             if not next_entry:
@@ -1275,6 +1277,7 @@ class MusicBot(discord.Client):
                     )
 
             while player.autoplaylist:
+                log.everything("Loop2 in on_player_finished_playing - APL loop...")
                 if self.config.auto_playlist_random:
                     random.shuffle(player.autoplaylist)
                     song_url = random.choice(player.autoplaylist)
@@ -1864,6 +1867,7 @@ class MusicBot(discord.Client):
         # method used to periodically check for a signal, and process it.
         async def check_windows_signal() -> None:
             while True:
+
                 if self.logout_called:
                     break
                 if self._os_signal is None:
@@ -4638,9 +4642,9 @@ class MusicBot(discord.Client):
         """
 
         lock_key = f"summon:{guild.id}"
-        log.info(f"Attempting to acquire lock for {lock_key}")
+        log.info("Attempting to acquire lock for %s", lock_key)
         async with self.aiolocks[lock_key]:
-            log.info(f"Lock acquired for {lock_key}")
+            log.info("Attempting to acquire lock for %s", lock_key)
             if not author.voice or not author.voice.channel:
                 raise exceptions.CommandError(
                     self.str.get(
@@ -5314,9 +5318,6 @@ class MusicBot(discord.Client):
 
             {command_prefix}config set [Section] [Option] [value]
                 Validates the option and sets the config for the session, but not to file.
-
-            {command_prefix}config reset [Section] [Option]
-                Resets an option to it's default value if possible.
 
         This command allows management of MusicBot config options file.
         """
