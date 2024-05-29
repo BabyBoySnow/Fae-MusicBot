@@ -17,7 +17,7 @@ import traceback
 from collections import defaultdict
 from io import BytesIO, StringIO
 from textwrap import dedent
-from typing import Any, DefaultDict, Dict, List, Optional, Set, Union
+from typing import TYPE_CHECKING, Any, DefaultDict, Dict, List, Optional, Set, Union
 
 import aiohttp
 import certifi  # type: ignore[import-untyped, unused-ignore]
@@ -79,6 +79,14 @@ try:
 except ImportError:
     objgraph = None
 
+
+if TYPE_CHECKING:
+    from collections.abc import Coroutine
+    from contextvars import Context as CtxVars
+
+    AsyncTask = asyncio.Task[Any]
+else:
+    AsyncTask = asyncio.Task
 
 # Type aliases
 ExitSignals = Union[None, exceptions.RestartSignal, exceptions.TerminateSignal]
@@ -155,6 +163,7 @@ class MusicBot(discord.Client):
         self.cached_app_info: Optional[discord.AppInfo] = None
         self.last_status: Optional[discord.BaseActivity] = None
         self.players: Dict[int, MusicPlayer] = {}
+        self.task_pool: Set[AsyncTask] = set()
 
         self.config = Config(self._config_file)
 
@@ -188,6 +197,47 @@ class MusicBot(discord.Client):
         intents.typing = False
         intents.presences = False
         super().__init__(intents=intents)
+
+    def create_task(
+        self,
+        coro: "Coroutine[Any, Any, Any]",
+        *,
+        name: Optional[str] = None,
+        ctx: Optional["CtxVars"] = None,
+    ) -> None:
+        """
+        Same as asyncio.create_task() but manages the task reference.
+        This prevents garbage collection of tasks until they are finished.
+        """
+        if not self.loop:
+            log.error("Loop is closed, cannot create task for: %r", coro)
+            return
+
+        # context was not added until python 3.11
+        if sys.version_info >= (3, 11):
+            t = self.loop.create_task(coro, name=name, context=ctx)
+        else:  # assume 3.8 +
+            t = self.loop.create_task(coro, name=name)
+        self.task_pool.add(t)
+
+        def discard_task(task: AsyncTask) -> None:
+            """Clean up the spawned task and handle its exceptions."""
+            ex = task.exception()
+            if ex:
+                if log.getEffectiveLevel() <= logging.DEBUG:
+                    log.exception(
+                        "Unhandled exception for task:  %r", task, exc_info=ex
+                    )
+                else:
+                    log.error(
+                        "Unhandled exception for task:  %r  --  %s",
+                        task,
+                        str(ex),
+                    )
+
+            self.task_pool.discard(task)
+
+        t.add_done_callback(discard_task)
 
     async def setup_hook(self) -> None:
         """async init phase that is called by d.py before login."""
@@ -258,7 +308,7 @@ class MusicBot(discord.Client):
         log.info("Initialized, now connecting to discord.")
         # this creates an output similar to a progress indicator.
         muffle_discord_console_log()
-        self.loop.create_task(self._test_network(), name="MB_PingTest")
+        self.create_task(self._test_network(), name="MB_PingTest")
 
     async def _test_network(self) -> None:
         """
@@ -315,8 +365,8 @@ class MusicBot(discord.Client):
             return
 
         # set up the next ping task if possible.
-        if self.loop and not self.logout_called:
-            self.loop.create_task(self._test_network(), name="MB_PingTest")
+        if not self.logout_called:
+            self.create_task(self._test_network(), name="MB_PingTest")
 
     async def _test_network_via_http(self, ping_target: str) -> int:
         """
@@ -723,11 +773,8 @@ class MusicBot(discord.Client):
 
         # Otherwise we need to connect to the given channel.
         max_timeout = VOICE_CLIENT_RECONNECT_TIMEOUT * VOICE_CLIENT_MAX_RETRY_CONNECT
-        attempts = 0
-        while True:
-            log.everything("MusicPlayer connection looping...")  # type: ignore[attr-defined]
-            attempts += 1
-            timeout = attempts * VOICE_CLIENT_RECONNECT_TIMEOUT
+        for attempt in range(1, (VOICE_CLIENT_MAX_RETRY_CONNECT + 1)):
+            timeout = attempt * VOICE_CLIENT_RECONNECT_TIMEOUT
             if timeout > max_timeout:
                 log.critical(
                     "MusicBot is unable to connect to the channel right now:  %s",
@@ -750,7 +797,7 @@ class MusicBot(discord.Client):
             except asyncio.exceptions.TimeoutError:
                 log.warning(
                     "Retrying connection after a timeout error (%s) while trying to connect to:  %s",
-                    attempts,
+                    attempt,
                     channel,
                 )
             except asyncio.exceptions.CancelledError as e:
@@ -800,7 +847,7 @@ class MusicBot(discord.Client):
                     asyncio.exceptions.TimeoutError,
                 ):
                     if self.config.debug_mode:
-                        log.warning("The disconnect failed or was cancelledd.")
+                        log.warning("The disconnect failed or was cancelled.")
 
             # ensure the player is dead and gone.
             player.kill()
@@ -1160,7 +1207,9 @@ class MusicBot(discord.Client):
         if player.session_progress > 1:
             await self.serialize_queue(player.voice_client.channel.guild)
 
-        self.loop.create_task(self.handle_player_inactivity(player))
+        self.create_task(
+            self.handle_player_inactivity(player), name="MB_HandleInactivePlayer"
+        )
 
     async def on_player_stop(self, player: MusicPlayer, **_: Any) -> None:
         """
@@ -1169,7 +1218,9 @@ class MusicBot(discord.Client):
         """
         log.debug("Running on_player_stop")
         await self.update_now_playing_status()
-        self.loop.create_task(self.handle_player_inactivity(player))
+        self.create_task(
+            self.handle_player_inactivity(player), name="MB_HandleInactivePlayer"
+        )
 
     async def on_player_finished_playing(self, player: MusicPlayer, **_: Any) -> None:
         """
@@ -1217,8 +1268,19 @@ class MusicBot(discord.Client):
 
         # avoid downloading the next entries if the user is absent and we are configured to skip.
         notice_sent = False  # set a flag to avoid message spam.
-        while True:
-            log.everything("Loop1 in on_player_finished_playing...")  # type: ignore[attr-defined]
+        while len(player.playlist):
+            log.everything(  # type: ignore[attr-defined]
+                "Looping over queue to expunge songs with missing author..."
+            )
+
+            if not self.loop or (self.loop and self.loop.is_closed()):
+                log.debug("Event loop is closed, nothing else to do here.")
+                return
+
+            if self.logout_called:
+                log.debug("Logout under way, ignoring this event.")
+                return
+
             next_entry = player.playlist.peek()
 
             if not next_entry:
@@ -1277,7 +1339,18 @@ class MusicBot(discord.Client):
                     )
 
             while player.autoplaylist:
-                log.everything("Loop2 in on_player_finished_playing - APL loop...")  # type: ignore[attr-defined]
+                log.everything(  # type: ignore[attr-defined]
+                    "Looping over player autoplaylist..."
+                )
+
+                if not self.loop or (self.loop and self.loop.is_closed()):
+                    log.debug("Event loop is closed, nothing else to do here.")
+                    return
+
+                if self.logout_called:
+                    log.debug("Logout under way, ignoring this event.")
+                    return
+
                 if self.config.auto_playlist_random:
                     random.shuffle(player.autoplaylist)
                     song_url = random.choice(player.autoplaylist)
@@ -1305,7 +1378,7 @@ class MusicBot(discord.Client):
 
                 except youtube_dl.utils.DownloadError as e:
                     log.error(
-                        'Error while downloading song "%s":  %s',
+                        'Error while processing song "%s":  %s',
                         song_url,
                         e,
                     )
@@ -1373,6 +1446,7 @@ class MusicBot(discord.Client):
                     log.debug("Exception data for above error:", exc_info=True)
                     continue
                 break
+            # end of autoplaylist loop.
 
             if not self.server_data[guild.id].autoplaylist:
                 log.warning("No playable songs in the autoplaylist, disabling.")
@@ -1381,7 +1455,7 @@ class MusicBot(discord.Client):
         else:  # Don't serialize for autoplaylist events
             await self.serialize_queue(guild)
 
-        if not player.is_stopped and not player.is_dead:
+        if not player.is_dead and not player.current_entry and len(player.playlist):
             player.play(_continue=True)
 
     async def on_player_entry_added(
@@ -1414,7 +1488,7 @@ class MusicBot(discord.Client):
 
     async def on_player_error(
         self,
-        player: MusicPlayer,  # pylint: disable=unused-argument
+        player: MusicPlayer,
         entry: Optional[EntryTypes],
         ex: Optional[Exception],
         **_: Any,
@@ -1422,15 +1496,43 @@ class MusicBot(discord.Client):
         """
         Event called by MusicPlayer when an entry throws an error.
         """
+        # Log the exception according to entry or bare error.
+        if entry is not None:
+            log.exception(
+                "MusicPlayer exception for entry: %r",
+                entry,
+                exc_info=ex,
+            )
+        else:
+            log.exception(
+                "MusicPlayer exception.",
+                exc_info=ex,
+            )
+
+        # Send a message to the calling channel if we can.
         if entry and entry.channel:
             song = entry.title or entry.url
             await self.safe_send_message(
                 entry.channel,
                 # TODO: i18n / UI stuff
                 f"Playback failed for song: `{song}` due to error:\n```\n{ex}\n```",
+                expire_in=90,
             )
-        else:
-            log.exception("Player error", exc_info=ex)
+
+        # Take care of auto-playlist related issues.
+        if entry and entry.from_auto_playlist:
+            log.info("Auto playlist track could not be played:  %r", entry)
+            guild = player.voice_client.guild
+            await self.server_data[guild.id].autoplaylist.remove_track(
+                entry.info.input_subject, ex=ex, delete_from_ap=self.config.remove_ap
+            )
+
+        # If the party isn't rockin', don't bother knockin on my door.
+        if not player.is_dead:
+            if len(player.playlist):
+                player.play(_continue=True)
+            elif self.config.auto_playlist:
+                await self.on_player_finished_playing(player)
 
     async def update_now_playing_status(self, set_offline: bool = False) -> None:
         """Inspects available players and ultimately fire change_presence()"""
@@ -1718,14 +1820,17 @@ class MusicBot(discord.Client):
                     "Got HTTPException trying to send message to %s: %s", dest, content
                 )
 
+        except aiohttp.client_exceptions.ClientError:
+            lfunc("Failed to send due to an HTTP error.")
+
         finally:
             if not retry_after and self.config.delete_messages:
                 if msg and expire_in:
-                    asyncio.ensure_future(self._wait_delete_msg(msg, expire_in))
+                    self.create_task(self._wait_delete_msg(msg, expire_in))
 
             if not retry_after and self.config.delete_invoking:
                 if also_delete and isinstance(also_delete, discord.Message):
-                    asyncio.ensure_future(self._wait_delete_msg(also_delete, expire_in))
+                    self.create_task(self._wait_delete_msg(also_delete, expire_in))
 
         return msg
 
@@ -1771,7 +1876,7 @@ class MusicBot(discord.Client):
                         "Rate limited message delete, retrying in %s seconds.",
                         retry_after,
                     )
-                    asyncio.ensure_future(self._wait_delete_msg(message, retry_after))
+                    self.create_task(self._wait_delete_msg(message, retry_after))
                 else:
                     log.error("Rate limited message delete, but cannot retry!")
 
@@ -1780,6 +1885,9 @@ class MusicBot(discord.Client):
                 log.noise(  # type: ignore[attr-defined]
                     "Got HTTPException trying to delete message: %s", message
                 )
+
+        except aiohttp.client_exceptions.ClientError:
+            lfunc("Failed to send due to an HTTP error.")
 
         return None
 
@@ -1849,6 +1957,9 @@ class MusicBot(discord.Client):
                     "Got HTTPException trying to edit message %s to: %s", message, new
                 )
 
+        except aiohttp.client_exceptions.ClientError:
+            lfunc("Failed to send due to an HTTP error.")
+
         return None
 
     def _setup_windows_signal_handler(self) -> None:
@@ -1882,7 +1993,10 @@ class MusicBot(discord.Client):
         # register interrupt signal Ctrl+C to be trapped.
         signal.signal(signal.SIGINT, set_windows_signal)
         # and start the signal checking loop.
-        asyncio.create_task(check_windows_signal())
+        task_ref = asyncio.create_task(
+            check_windows_signal(), name="MB_WinInteruptChecker"
+        )
+        setattr(self, "_mb_win_sig_checker_task", task_ref)
 
     async def on_os_signal(
         self, sig: signal.Signals, _loop: asyncio.AbstractEventLoop
@@ -1937,6 +2051,16 @@ class MusicBot(discord.Client):
             ) from e
 
         finally:
+            # Shut down the thread pool executor.
+            log.info("Waiting for download threads to finish up...")
+            # We can't kill the threads in ThreadPoolExecutor.  User can Ctrl+C though.
+            # We can pass `wait=False` and carry on with "shutdown" but threads
+            # will stay until they're done.  We wait to keep it clean...
+            tps_args: Dict[str, Any] = {}
+            if sys.version_info >= (3, 9):
+                tps_args["cancel_futures"] = True
+            self.downloader.thread_pool.shutdown(**tps_args)
+
             # Inspect all waiting tasks and either cancel them or let them finish.
             pending_tasks = []
             for task in asyncio.all_tasks(loop=self.loop):
@@ -1950,9 +2074,8 @@ class MusicBot(discord.Client):
                 if coro and hasattr(coro, "__qualname__"):
                     coro_name = getattr(coro, "__qualname__", "[unknown]")
 
-                if (
-                    tname.startswith("Signal_SIG")
-                    or coro_name == "URLPlaylistEntry._download"
+                if tname.startswith("Signal_SIG") or coro_name.startswith(
+                    "Client.close."
                 ):
                     log.debug("Will wait for task:  %s  (%s)", tname, coro_name)
                     pending_tasks.append(task)
@@ -2245,7 +2368,7 @@ class MusicBot(discord.Client):
         """
         if self.on_ready_count > 0:
             log.debug("Event on_ready has fired %s times", self.on_ready_count)
-        self.loop.create_task(self._on_ready_call_later())
+        self.create_task(self._on_ready_call_later(), name="MB_PostOnReady")
 
     async def _on_ready_call_later(self) -> None:
         """
@@ -3199,8 +3322,9 @@ class MusicBot(discord.Client):
                         return
 
                     if f_player is not None:
-                        self.loop.create_task(
-                            self._handle_guild_auto_pause(f_player, _lc=_lc)
+                        self.create_task(
+                            self._handle_guild_auto_pause(f_player, _lc=_lc),
+                            name="MB_HandleGuildAutoPause",
                         )
                 return
 
@@ -3774,7 +3898,7 @@ class MusicBot(discord.Client):
         if matches:
             pl_url = "https://www.youtube.com/playlist?" + matches.group(2)
             ignore_vid = matches.group(1)
-            asyncio.ensure_future(
+            self.create_task(
                 _prompt_for_playing(
                     # TODO: i18n / UI stuff
                     f"This link contains a Playlist ID:\n`{song_url}`\n\nDo you want to queue the playlist too?",
@@ -4040,6 +4164,7 @@ class MusicBot(discord.Client):
             if position == 1 and player.is_stopped:
                 position = self.str.get("cmd-play-next", "Up next!")
                 reply_text %= (btext, position)
+                player.play()
 
             # shift the playing track to the end of queue and skip current playback.
             elif skip_playing and player.is_playing and player.current_entry:
@@ -4183,6 +4308,9 @@ class MusicBot(discord.Client):
             await _player.playlist.add_stream_from_info(
                 info, channel=channel, author=author, head=False
             )
+
+            if _player.is_stopped:
+                _player.play()
 
         return Response(
             self.str.get("cmd-stream-success", "Streaming."), delete_after=6
@@ -4641,51 +4769,49 @@ class MusicBot(discord.Client):
         Call the bot to the summoner's voice channel.
         """
 
-        lock_key = f"summon:{guild.id}"
-        log.info("Attempting to acquire lock for %s", lock_key)
-        async with self.aiolocks[lock_key]:
-            log.info("Attempting to acquire lock for %s", lock_key)
-            if not author.voice or not author.voice.channel:
-                raise exceptions.CommandError(
-                    self.str.get(
-                        "cmd-summon-novc",
-                        "You are not connected to voice. Try joining a voice channel!",
-                    )
-                )
+        # @TheerapakG: Maybe summon should have async lock?
 
-            player = self.get_player_in(guild)
-            if player and player.voice_client and guild == author.voice.channel.guild:
-                # NOTE:  .move_to() does not support setting self-deafen flag,
-                # nor respect flags set in initial connect call.
-                # await player.voice_client.move_to(author.voice.channel)
-                await guild.change_voice_state(
-                    channel=author.voice.channel,
-                    self_deaf=self.config.self_deafen,
+        if not author.voice or not author.voice.channel:
+            raise exceptions.CommandError(
+                self.str.get(
+                    "cmd-summon-novc",
+                    "You are not connected to voice. Try joining a voice channel!",
                 )
-            else:
-                player = await self.get_player(
-                    author.voice.channel,
-                    create=True,
-                    deserialize=self.config.persistent_queue,
-                )
-
-                if player.is_stopped:
-                    player.play()
-
-            log.info(
-                "Joining %s/%s",
-                author.voice.channel.guild.name,
-                author.voice.channel.name,
             )
 
-            self.server_data[guild.id].last_np_msg = message
-
-            return Response(
-                self.str.get("cmd-summon-reply", "Connected to `{0.name}`").format(
-                    author.voice.channel
-                ),
-                delete_after=30,
+        player = self.get_player_in(guild)
+        if player and player.voice_client and guild == author.voice.channel.guild:
+            # NOTE:  .move_to() does not support setting self-deafen flag,
+            # nor respect flags set in initial connect call.
+            # await player.voice_client.move_to(author.voice.channel)
+            await guild.change_voice_state(
+                channel=author.voice.channel,
+                self_deaf=self.config.self_deafen,
             )
+        else:
+            player = await self.get_player(
+                author.voice.channel,
+                create=True,
+                deserialize=self.config.persistent_queue,
+            )
+
+            if player.is_stopped:
+                player.play()
+
+        log.info(
+            "Joining %s/%s",
+            author.voice.channel.guild.name,
+            author.voice.channel.name,
+        )
+
+        self.server_data[guild.id].last_np_msg = message
+
+        return Response(
+            self.str.get("cmd-summon-reply", "Connected to `{0.name}`").format(
+                author.voice.channel
+            ),
+            delete_after=30,
+        )
 
     async def cmd_follow(
         self,
@@ -7589,7 +7715,9 @@ class MusicBot(discord.Client):
                         "%s has been detected as empty. Handling timeouts.",
                         before.channel.name,
                     )
-                    self.loop.create_task(self.handle_vc_inactivity(guild))
+                    self.create_task(
+                        self.handle_vc_inactivity(guild), name="MB_HandleInactiveVC"
+                    )
             elif after.channel and member != self.user:
                 if self.user in after.channel.members:
                     if event.is_active():
@@ -7611,7 +7739,9 @@ class MusicBot(discord.Client):
                         "The bot got moved and the voice channel %s is empty. Handling timeouts.",
                         after.channel.name,
                     )
-                    self.loop.create_task(self.handle_vc_inactivity(guild))
+                    self.create_task(
+                        self.handle_vc_inactivity(guild), name="MB_HandleInactiveVC"
+                    )
                 else:
                     if event.is_active():
                         log.info(
