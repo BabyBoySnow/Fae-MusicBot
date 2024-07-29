@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import datetime
 import functools
@@ -85,12 +86,28 @@ class Downloader:
         )
 
         # force ytdlp and HEAD requests to use the same UA string.
-        self.http_req_headers = {
-            "User-Agent": youtube_dl.utils.networking.random_user_agent()
-        }
+        # If the constant is set, use that, otherwise use dynamic selection.
+        if bot.config.ytdlp_user_agent:
+            ua = bot.config.ytdlp_user_agent
+            log.warning("Forcing YTDLP to use User Agent:  %s", ua)
+        else:
+            ua = youtube_dl.utils.networking.random_user_agent()
+        self.http_req_headers = {"User-Agent": ua}
         # Copy immutable dict and use the mutable copy for everything else.
         ytdl_format_options = ytdl_format_options_immutable.copy()
         ytdl_format_options["http_headers"] = self.http_req_headers
+
+        # check if we should apply a cookies file to ytdlp.
+        if bot.config.cookies_path.is_file():
+            log.info(
+                "MusicBot will use cookies for yt-dlp from:  %s",
+                bot.config.cookies_path,
+            )
+            ytdl_format_options["cookiefile"] = bot.config.cookies_path
+
+        if bot.config.ytdlp_proxy:
+            log.info("Yt-dlp will use your configured proxy server.")
+            ytdl_format_options["proxy"] = bot.config.ytdlp_proxy
 
         if self.download_folder:
             # print("setting template to " + os.path.join(download_folder, otmpl))
@@ -108,6 +125,43 @@ class Downloader:
     def ytdl(self) -> youtube_dl.YoutubeDL:
         """Get the Safe (errors ignored) instance of YoutubeDL."""
         return self.safe_ytdl
+
+    @property
+    def cookies_enabled(self) -> bool:
+        """
+        Get status of cookiefile option in ytdlp objects.
+        """
+        return all(
+            "cookiefile" in ytdl.params for ytdl in [self.safe_ytdl, self.unsafe_ytdl]
+        )
+
+    def enable_ytdl_cookies(self) -> None:
+        """
+        Set the cookiefile option on the ytdl objects.
+        """
+        self.safe_ytdl.params["cookiefile"] = self.bot.config.cookies_path
+        self.unsafe_ytdl.params["cookiefile"] = self.bot.config.cookies_path
+
+    def disable_ytdl_cookies(self) -> None:
+        """
+        Remove the cookiefile option on the ytdl objects.
+        """
+        del self.safe_ytdl.params["cookiefile"]
+        del self.unsafe_ytdl.params["cookiefile"]
+
+    def randomize_user_agent_string(self) -> None:
+        """
+        Uses ytdlp utils functions to re-randomize UA strings in YoutubeDL
+        objects and header check requests.
+        """
+        # ignore this call if static UA is configured.
+        if not self.bot.config.ytdlp_user_agent:
+            return
+
+        new_ua = youtube_dl.utils.networking.random_user_agent()
+        self.unsafe_ytdl.params["http_headers"]["User-Agent"] = new_ua
+        self.safe_ytdl.params["http_headers"]["User-Agent"] = new_ua
+        self.http_req_headers["User-Agent"] = new_ua
 
     def get_url_or_none(self, url: str) -> Optional[str]:
         """
@@ -152,6 +206,9 @@ class Downloader:
                         headers[new_key] = values
                     else:
                         headers[new_key] = values.pop()
+            except asyncio.exceptions.TimeoutError:
+                log.warning("Checking media headers failed due to timeout.")
+                headers = {"X-HEAD-REQ-FAILED": "1"}
             except (ExtractionError, OSError, aiohttp.ClientError):
                 log.warning("Failed HEAD request for:  %s", test_url)
                 log.exception("HEAD Request exception: ")
@@ -191,6 +248,7 @@ class Downloader:
             timeout=req_timeout,
             allow_redirects=allow_redirects,
             headers=req_headers,
+            proxy=self.bot.config.ytdlp_proxy,
         ) as response:
             return response.headers
 
@@ -296,6 +354,9 @@ class Downloader:
         data["__input_subject"] = song_subject
         data["__header_data"] = headers or None
         data["__expected_filename"] = self.ytdl.prepare_filename(data)
+
+        # ensure the UA is randomized with each new request if not set static.
+        self.randomize_user_agent_string()
 
         """
         # disabled since it is only needed for working on extractions.
