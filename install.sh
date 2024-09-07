@@ -219,7 +219,7 @@ function setup_as_service() {
         sed -i "s,mbdirectory,${PWD},g" ./musicbot.service
 
         # Copy the service file into place and enable it.
-        sudo cp ~/${CloneDir}/musicbot.service /etc/systemd/system/
+        sudo cp ~/"${CloneDir}"/musicbot.service /etc/systemd/system/
         sudo chown root:root /etc/systemd/system/musicbot.service
         sudo chmod 644 /etc/systemd/system/musicbot.service
         sudo systemctl enable musicbot
@@ -239,7 +239,7 @@ function ask_setup_aliases() {
     case $SERVICE in
     [Yy]*)
         echo "Setting up command..."
-        sudo cp ~/${CloneDir}/musicbotcmd /usr/bin/musicbot
+        sudo cp ~/"${CloneDir}"/musicbotcmd /usr/bin/musicbot
         sudo chown root:root /usr/bin/musicbot
         sudo chmod 644 /usr/bin/musicbot
         sudo chmod +x /usr/bin/musicbot
@@ -382,11 +382,13 @@ if [[ "${1,,}" == "--list" ]] ; then
     # We control which cases we grab based on the space at the end of each 
     # case pattern, before ) or | characters.
     # This allows adding complex cases which will be excluded from the list.
-    Avail=$(grep -oh '\*"[[:alnum:] _!\.]*"\*[|)]' "$0" )
+    Avail=$(grep -oh '\*"[[:alnum:] _!\./]*"\*[|)]' "$0" )
     Avail="${Avail//\*\"/}"
     Avail="${Avail//\"\*/}"
     Avail="${Avail//[|)]/}"
 
+    echo "We detected your OS is:  ${DISTRO_NAME}"
+    echo ""
     echo "The MusicBot installer might have support for these flavors of Linux:"
     echo "$Avail"
     echo ""
@@ -453,14 +455,47 @@ case $DISTRO_NAME in
     deactivate
     ;;
 
-*"Pop!_OS"*)  # Tested working 22.04  @  2024/03/29
-    sudo apt-get update -y
-    sudo apt-get upgrade -y
-    sudo apt-get install build-essential software-properties-common \
-        unzip curl git ffmpeg libopus-dev libffi-dev libsodium-dev \
-        python3-pip python3-dev jq -y
+*"Pop!_OS"* )
+    case $DISTRO_NAME in
 
-    pull_musicbot_git
+    # Tested working 22.04  @  2024/03/29
+    *"Pop!_OS 22.04"*)
+        sudo apt-get update -y
+        sudo apt-get upgrade -y
+        sudo apt-get install build-essential software-properties-common \
+            unzip curl git ffmpeg libopus-dev libffi-dev libsodium-dev \
+            python3-pip python3-dev jq -y
+
+        pull_musicbot_git
+        ;;
+
+    *"Pop!_OS 24.04"*)
+        sudo apt-get update -y
+        sudo apt-get upgrade -y
+        sudo apt-get install build-essential software-properties-common \
+            unzip curl git ffmpeg libopus-dev libffi-dev libsodium-dev \
+            python3-full python3-pip python3-venv python3-dev jq -y
+
+        # Create and activate a venv using python that was just installed.
+        find_python
+        $PyBin -m venv "${VenvDir}"
+        InstalledViaVenv=1
+        CloneDir="${VenvDir}/${CloneDir}"
+        # shellcheck disable=SC1091
+        source "${VenvDir}/bin/activate"
+        find_python
+
+        pull_musicbot_git
+
+        # exit venv
+        deactiveate
+        ;;
+
+    *)
+        echo "Unsupported version of Pop! OS."
+        exit 1
+        ;;
+    esac
     ;;
 
 *"Ubuntu"* )
@@ -520,6 +555,30 @@ case $DISTRO_NAME in
         pull_musicbot_git
         ;;
 
+    # Tested working:
+    # 24.04  @  2024/09/04
+    *"Ubuntu 24"*)
+        sudo apt-get update -y
+        sudo apt-get upgrade -y
+        sudo apt-get install build-essential software-properties-common \
+            unzip curl git ffmpeg libopus-dev libffi-dev libsodium-dev \
+            python3-full python3-pip python3-venv python3-dev jq -y
+
+        # Create and activate a venv using python that was just installed.
+        find_python
+        $PyBin -m venv "${VenvDir}"
+        InstalledViaVenv=1
+        CloneDir="${VenvDir}/${CloneDir}"
+        # shellcheck disable=SC1091
+        source "${VenvDir}/bin/activate"
+        find_python
+
+        pull_musicbot_git
+
+        # exit venv
+        deactiveate
+        ;;
+
     # Ubuntu version 17 and under is not supported.
     *)
         echo "Unsupported version of Ubuntu."
@@ -530,7 +589,7 @@ case $DISTRO_NAME in
     ;;
 
 # NOTE: Raspberry Pi OS 11, i386 arch, returns Debian as distro name.
-*"Debian"*)
+*"Debian"* )
     case $DISTRO_NAME in
     # Tested working:
     # R-Pi OS 11  @  2024/03/29
@@ -545,12 +604,15 @@ case $DISTRO_NAME in
         pull_musicbot_git
         ;;
 
-    *"Debian GNU/Linux 12"*)  # Tested working 12.5  @  2024/03/31
+    # Tested working 12.5  @  2024/03/31
+    # Tested working 12.7  @  2024/09/05
+    # Tested working trixie  @  2024/09/05
+    *"Debian GNU/Linux 12"*|*"Debian GNU/Linux trixie"*|*"Debian GNU/Linux sid"*)
         # Debian 12 uses system controlled python packages.
         sudo apt-get update -y
         sudo apt-get upgrade -y
         sudo apt-get install build-essential libopus-dev libffi-dev libsodium-dev \
-            python3-full python3-dev python3-pip git ffmpeg curl
+            python3-full python3-dev python3-venv python3-pip git ffmpeg curl
 
         # Create and activate a venv using python that was just installed.
         find_python
