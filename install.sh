@@ -13,7 +13,8 @@
 # This is currently required since upstream does not have the updated service file.
 MusicBotGitURL="https://github.com/itsTheFae/MusicBot.git"
 CloneDir="MusicBot"
-VenvDir="${CloneDir}Venv"
+VenvDir="MusicBotVenv"
+InstallDir=""
 
 EnableUnlistedBranches=0
 DEBUG=0
@@ -57,6 +58,50 @@ else
 fi
 
 #----------------------------------------------Functions----------------------------------------------#
+function list_supported() {
+    # List off "supported" linux distro/versions if asked to and exit.
+    # We search this file and extract names from the supported cases below.
+    # We control which cases we grab based on the space at the end of each 
+    # case pattern, before ) or | characters.
+    # This allows adding complex cases which will be excluded from the list.
+    Avail=$(grep -oh '\*"[[:alnum:] _!\./]*"\*[|)]' "$0" )
+    Avail="${Avail//\*\"/}"
+    Avail="${Avail//\"\*/}"
+    Avail="${Avail//[|)]/}"
+
+    echo "We detected your OS is:  ${DISTRO_NAME}"
+    echo ""
+    echo "The MusicBot installer might have support for these flavors of Linux:"
+    echo "$Avail"
+    echo ""
+    exit 0
+}
+
+function show_help() {
+    # provide help text for the installer and exit.
+    echo "MusicBot Installer script usage:"
+    echo "  $0 [OPTIONS]"
+    echo ""
+    echo "By default, the installer script installs as the user who runs the script."
+    echo "The user should have permission to install system packages using sudo."
+    echo "Do NOT run this script with sudo, you will be prompted when it is needed!"
+    echo "To bypass system packages steps, provide option: --no-sys"
+    echo " Note: Your system admin must install the packages before hand, by using:"
+    echo "   $0 --sys-only"
+    echo ""
+    echo "Available Options:"
+    echo ""
+    echo "  --list      List potentially supported versions and exits."
+    echo "  --help      Show this help text and exit."
+    echo "  --sys-only  Install only system packages, no bot or pip libraries."
+    echo "  --no-sys    Bypass system packages, install bot and pip libraries."
+    echo "  --debug     Enter debug mode, with extra output. (for developers)"
+    echo "  --any-branch    Allow any existing branch to be given at the branch prompt. (for developers)"
+    echo "  --dir [PATH]    Directory into which MusicBot will be installed. Default is user Home directory."
+    echo ""
+    exit 0
+}
+
 function exit_err() {
     echo "$@"
     exit 1
@@ -121,16 +166,16 @@ function find_python() {
 function pull_musicbot_git() {
     echo ""
     # Check if we're running inside a previously pulled repo.
+    # ignore this if InstallDir is set.
     GitDir="${PWD}/.git"
     BotDir="${PWD}/musicbot"
     ReqFile="${PWD}/requirements.txt"
-    if [ -d "$GitDir" ] && [ -d "$BotDir" ] && [ -f "$ReqFile" ] ; then
+    if [ -d "$GitDir" ] && [ -d "$BotDir" ] && [ -f "$ReqFile" ] && [ "$InstallDir" == "" ]; then
         echo "Existing MusicBot repo detected."
         read -rp "Would you like to install using the current repo? [Y/n]" UsePwd
         if [ "${UsePwd,,}" == "y" ] || [ "${UsePwd,,}" == "yes" ] ; then
             echo ""
             CloneDir="${PWD}"
-            VenvDir="${CloneDir}/Venv"
 
             $PyBin -m pip install --upgrade -r requirements.txt
             echo ""
@@ -141,11 +186,18 @@ function pull_musicbot_git() {
         echo "Installer will attempt to create a new directory for MusicBot."
     fi
 
-    cd ~ || exit_err "Fatal:  Could not change to home directory."
-
-    if [ -d "${CloneDir}" ] ; then
-        echo "Error: A directory named ${CloneDir} already exists in your home directory."
-        exit_err "Delete the ${CloneDir} directory and try again, or complete the install manually."
+    # test if we install at home-directory or a specified path.
+    if [ "$InstallDir" == "" ] ; then
+        cd ~ || exit_err "Fatal:  Could not change into home directory."
+        if [ -d "${CloneDir}" ] ; then
+            echo "Error: A directory named ${CloneDir} already exists in your home directory."
+            exit_err "Delete the ${CloneDir} directory and try again, or complete the install manually."
+        fi
+    else
+        cd "$InstallDir" || exit_err "Fatal:  Could not change into install directory:  ${InstallDir}"
+        if [ "$InstalledViaVenv" != "1" ] ; then
+            CloneDir="${InstallDir}"
+        fi
     fi
 
     echo ""
@@ -153,6 +205,9 @@ function pull_musicbot_git() {
     echo "  master - An older MusicBot, for older discord.py. May not work without tweaks!"
     echo "  review - Newer MusicBot, usually stable with less updates than the dev branch."
     echo "  dev    - The newest MusicBot, latest features and changes which may need testing."
+    if [ "$EnableUnlistedBranches" == "1" ] ; then
+    echo "  *      - WARNING: Any branch name is allowed, if it exists on github."
+    fi
     echo ""
     read -rp "Enter the branch name you want to install:  " BRANCH
     case ${BRANCH,,} in
@@ -183,6 +238,22 @@ function pull_musicbot_git() {
     echo ""
 
     cp ./config/example_options.ini ./config/options.ini
+}
+
+function install_as_venv() {
+    # Create and activate a venv using python that is installed.
+    find_python
+    $PyBin -m venv "${VenvDir}"
+    InstalledViaVenv=1
+    CloneDir="${VenvDir}/${CloneDir}"
+    # shellcheck disable=SC1091
+    source "${VenvDir}/bin/activate"
+    find_python
+
+    pull_musicbot_git
+
+    # exit venv
+    deactiveate
 }
 
 function setup_as_service() {
@@ -375,26 +446,66 @@ function configure_bot() {
     esac
 }
 
-#------------------------------------------------Logic------------------------------------------------#
-# list off "supported" linux distro/versions if asked to and exit.
-if [[ "${1,,}" == "--list" ]] ; then
-    # We search this file and extract names from the supported cases below.
-    # We control which cases we grab based on the space at the end of each 
-    # case pattern, before ) or | characters.
-    # This allows adding complex cases which will be excluded from the list.
-    Avail=$(grep -oh '\*"[[:alnum:] _!\./]*"\*[|)]' "$0" )
-    Avail="${Avail//\*\"/}"
-    Avail="${Avail//\"\*/}"
-    Avail="${Avail//[|)]/}"
+#------------------------------------------CLI Arguments----------------------------------------------#
+INSTALL_SYS_PKGS="1"
+INSTALL_BOT_BITS="1"
 
-    echo "We detected your OS is:  ${DISTRO_NAME}"
-    echo ""
-    echo "The MusicBot installer might have support for these flavors of Linux:"
-    echo "$Avail"
-    echo ""
-    exit 0
+while [[ $# -gt 0 ]]; do
+  case ${1,,} in
+    --list )
+        shift
+        list_supported
+    ;;
+    --help )
+        shift
+        show_help
+    ;;
+
+    --no-sys )
+        INSTALL_SYS_PKGS="0"
+        shift
+    ;;
+
+    --sys-only )
+        INSTALL_BOT_BITS="0"
+        shift
+    ;;
+
+    --any-branch )
+        EnableUnlistedBranches=1
+        shift
+    ;;
+
+    --debug )
+        DEBUG=1
+        shift
+        echo "DEBUG MODE IS ENABLED!"
+    ;;
+
+    "--dir" )
+        InstallDir="$2"
+        shift
+        shift
+        if [ "${InstallDir:0-1}" != "/" ] ; then
+            InstallDir="${InstallDir}/"
+        fi
+        if ! [ -d "$InstallDir" ] ; then
+            exit_err "The install directory given does not exist:   '$InstallDir'"
+        fi
+        VenvDir="${InstallDir}${VenvDir}"
+    ;;
+
+    * )
+        exit_err "Unknown option $1"
+    ;;
+  esac
+done
+
+if [ "${INSTALL_SYS_PKGS}${INSTALL_BOT_BITS}" == "00" ] ; then
+    exit_err "The options --no-sys and --sys-only cannot be used together."
 fi
 
+#------------------------------------------------Logic------------------------------------------------#
 cat << EOF
 MusicBot Installer
 
@@ -428,31 +539,28 @@ if [[ "${iagree,,}" != "y" && "${iagree,,}" != "yes" ]] ; then
 fi
 
 echo ""
-echo "Attempting to install required system packages..."
+if [ "${INSTALL_SYS_PKGS}${INSTALL_BOT_BITS}" == "11" ] ; then
+    echo "Attempting to install required system packages & MusicBot software..."
+else
+    if [ "${INSTALL_SYS_PKGS}${INSTALL_BOT_BITS}" == "10" ] ; then
+        echo "Attempting to install only required system packages..."
+    else
+        echo "Attempting to install only MusicBot and pip libraries..."
+    fi
+fi
 echo ""
 
 case $DISTRO_NAME in
 *"Arch Linux"*)  # Tested working 2024.03.01  @  2024/03/31
-    # NOTE: Arch now uses system managed python packages, so venv is required.
-    sudo pacman -Syu
-    sudo pacman -S curl ffmpeg git jq python python-pip
+    if [ "$INSTALL_SYS_PKGS" == "1" ] ; then
+        # NOTE: Arch now uses system managed python packages, so venv is required.
+        sudo pacman -Syu
+        sudo pacman -S curl ffmpeg git jq python python-pip
+    fi
 
-    # Make sure newly install python is used.
-    find_python
-
-    # create a venv to install MusicBot into and activate it.
-    $PyBin -m venv "${VenvDir}"
-    InstalledViaVenv=1
-    CloneDir="${VenvDir}/${CloneDir}"
-    # shellcheck disable=SC1091
-    source "${VenvDir}/bin/activate"
-
-    # Update python to use venv path.
-    find_python
-
-    pull_musicbot_git
-
-    deactivate
+    if [ "$INSTALL_BOT_BITS" == "1" ] ; then
+        install_as_venv
+    fi
     ;;
 
 *"Pop!_OS"* )
@@ -460,35 +568,31 @@ case $DISTRO_NAME in
 
     # Tested working 22.04  @  2024/03/29
     *"Pop!_OS 22.04"*)
-        sudo apt-get update -y
-        sudo apt-get upgrade -y
-        sudo apt-get install build-essential software-properties-common \
-            unzip curl git ffmpeg libopus-dev libffi-dev libsodium-dev \
-            python3-pip python3-dev jq -y
+        if [ "$INSTALL_SYS_PKGS" == "1" ] ; then
+            sudo apt-get update -y
+            sudo apt-get upgrade -y
+            sudo apt-get install build-essential software-properties-common \
+                unzip curl git ffmpeg libopus-dev libffi-dev libsodium-dev \
+                python3-pip python3-dev jq -y
+        fi
 
-        pull_musicbot_git
+        if [ "$INSTALL_BOT_BITS" == "1" ] ; then
+            pull_musicbot_git
+        fi
         ;;
 
     *"Pop!_OS 24.04"*)
-        sudo apt-get update -y
-        sudo apt-get upgrade -y
-        sudo apt-get install build-essential software-properties-common \
-            unzip curl git ffmpeg libopus-dev libffi-dev libsodium-dev \
-            python3-full python3-pip python3-venv python3-dev jq -y
+        if [ "$INSTALL_SYS_PKGS" == "1" ] ; then
+            sudo apt-get update -y
+            sudo apt-get upgrade -y
+            sudo apt-get install build-essential software-properties-common \
+                unzip curl git ffmpeg libopus-dev libffi-dev libsodium-dev \
+                python3-full python3-pip python3-venv python3-dev jq -y
+        fi
 
-        # Create and activate a venv using python that was just installed.
-        find_python
-        $PyBin -m venv "${VenvDir}"
-        InstalledViaVenv=1
-        CloneDir="${VenvDir}/${CloneDir}"
-        # shellcheck disable=SC1091
-        source "${VenvDir}/bin/activate"
-        find_python
-
-        pull_musicbot_git
-
-        # exit venv
-        deactiveate
+        if [ "$INSTALL_BOT_BITS" == "1" ] ; then
+            install_as_venv
+        fi
         ;;
 
     *)
@@ -502,81 +606,81 @@ case $DISTRO_NAME in
     # Some cases only use major version number to allow for both .04 and .10 minor versions.
     case $DISTRO_NAME in
     *"Ubuntu 18.04"*)  #  Tested working 18.04 @ 2024/03/29
-        sudo apt-get update -y
-        sudo apt-get upgrade -y
-        # 18.04 needs to build a newer version from source.
-        sudo apt-get install build-essential software-properties-common \
-            libopus-dev libffi-dev libsodium-dev libssl-dev \
-            zlib1g-dev libncurses5-dev libgdbm-dev libnss3-dev \
-            libreadline-dev libsqlite3-dev libbz2-dev \
-            unzip curl git jq ffmpeg -y
+        if [ "$INSTALL_SYS_PKGS" == "1" ] ; then
+            sudo apt-get update -y
+            sudo apt-get upgrade -y
+            # 18.04 needs to build a newer version from source.
+            sudo apt-get install build-essential software-properties-common \
+                libopus-dev libffi-dev libsodium-dev libssl-dev \
+                zlib1g-dev libncurses5-dev libgdbm-dev libnss3-dev \
+                libreadline-dev libsqlite3-dev libbz2-dev \
+                unzip curl git jq ffmpeg -y
+            
+            # Ask if we should build python
+            echo "We need to build python from source for your system. It will be installed using altinstall target."
+            read -rp "Would you like to continue ? [N/y]" BuildPython
+            if [ "${BuildPython,,}" == "y" ] || [ "${BuildPython,,}" == "yes" ] ; then
+                # Build python.
+                PyBuildVer="3.10.14"
+                PySrcDir="Python-${PyBuildVer}"
+                PySrcFile="${PySrcDir}.tgz"
 
-        # Ask if we should build python
-        echo "We need to build python from source for your system. It will be installed using altinstall target."
-        read -rp "Would you like to continue ? [N/y]" BuildPython
-        if [ "${BuildPython,,}" == "y" ] || [ "${BuildPython,,}" == "yes" ] ; then
-            # Build python.
-            PyBuildVer="3.10.14"
-            PySrcDir="Python-${PyBuildVer}"
-            PySrcFile="${PySrcDir}.tgz"
+                curl -o "$PySrcFile" "https://www.python.org/ftp/python/${PyBuildVer}/${PySrcFile}"
+                tar -xzf "$PySrcFile"
+                cd "${PySrcDir}" || exit_err "Fatal:  Could not change to python source directory."
 
-            curl -o "$PySrcFile" "https://www.python.org/ftp/python/${PyBuildVer}/${PySrcFile}"
-            tar -xzf "$PySrcFile"
-            cd "${PySrcDir}" || exit_err "Fatal:  Could not change to python source directory."
+                ./configure --enable-optimizations
+                sudo make altinstall
 
-            ./configure --enable-optimizations
-            sudo make altinstall
-
-            # Ensure python bin is updated with altinstall name.
-            find_python
-            RetVal=$?
-            if [ "$RetVal" == "0" ] ; then
-                # manually install pip package for current user.
-                $PyBin <(curl -s https://bootstrap.pypa.io/get-pip.py)
-            else
-                echo "Error:  Could not find python on the PATH after installing it."
-                exit 1
+                # Ensure python bin is updated with altinstall name.
+                find_python
+                RetVal=$?
+                if [ "$RetVal" == "0" ] ; then
+                    # manually install pip package for current user.
+                    $PyBin <(curl -s https://bootstrap.pypa.io/get-pip.py)
+                else
+                    echo "Error:  Could not find python on the PATH after installing it."
+                    exit 1
+                fi
             fi
         fi
 
-        pull_musicbot_git
+        if [ "$INSTALL_BOT_BITS" == "1" ] ; then
+            pull_musicbot_git
+        fi
         ;;
 
     # Tested working:
     # 20.04  @  2024/03/28
     # 22.04  @  2024/03/30
     *"Ubuntu 20"*|*"Ubuntu 22"*)
-        sudo apt-get update -y
-        sudo apt-get upgrade -y
-        sudo apt-get install build-essential software-properties-common \
-            unzip curl git ffmpeg libopus-dev libffi-dev libsodium-dev \
-            python3-pip python3-dev jq -y
+        if [ "$INSTALL_SYS_PKGS" == "1" ] ; then
+            sudo apt-get update -y
+            sudo apt-get upgrade -y
+            sudo apt-get install build-essential software-properties-common \
+                unzip curl git ffmpeg libopus-dev libffi-dev libsodium-dev \
+                python3-pip python3-dev jq -y
+        fi
 
-        pull_musicbot_git
+        if [ "$INSTALL_BOT_BITS" == "1" ] ; then
+            pull_musicbot_git
+        fi
         ;;
 
     # Tested working:
     # 24.04  @  2024/09/04
     *"Ubuntu 24"*)
-        sudo apt-get update -y
-        sudo apt-get upgrade -y
-        sudo apt-get install build-essential software-properties-common \
-            unzip curl git ffmpeg libopus-dev libffi-dev libsodium-dev \
-            python3-full python3-pip python3-venv python3-dev jq -y
+        if [ "$INSTALL_SYS_PKGS" == "1" ] ; then
+            sudo apt-get update -y
+            sudo apt-get upgrade -y
+            sudo apt-get install build-essential software-properties-common \
+                unzip curl git ffmpeg libopus-dev libffi-dev libsodium-dev \
+                python3-full python3-pip python3-venv python3-dev jq -y
+        fi
 
-        # Create and activate a venv using python that was just installed.
-        find_python
-        $PyBin -m venv "${VenvDir}"
-        InstalledViaVenv=1
-        CloneDir="${VenvDir}/${CloneDir}"
-        # shellcheck disable=SC1091
-        source "${VenvDir}/bin/activate"
-        find_python
-
-        pull_musicbot_git
-
-        # exit venv
-        deactiveate
+        if [ "$INSTALL_BOT_BITS" == "1" ] ; then
+            install_as_venv
+        fi
         ;;
 
     # Ubuntu version 17 and under is not supported.
@@ -595,13 +699,17 @@ case $DISTRO_NAME in
     # R-Pi OS 11  @  2024/03/29
     # Debian 11.3  @  2024/03/29
     *"Debian GNU/Linux 11"*)
-        sudo apt-get update -y
-        sudo apt-get upgrade -y
-        sudo apt-get install git libopus-dev libffi-dev libsodium-dev ffmpeg \
-            build-essential libncursesw5-dev libgdbm-dev libc6-dev zlib1g-dev \
-            libsqlite3-dev tk-dev libssl-dev openssl python3 python3-pip curl jq -y
+        if [ "$INSTALL_SYS_PKGS" == "1" ] ; then
+            sudo apt-get update -y
+            sudo apt-get upgrade -y
+            sudo apt-get install git libopus-dev libffi-dev libsodium-dev ffmpeg \
+                build-essential libncursesw5-dev libgdbm-dev libc6-dev zlib1g-dev \
+                libsqlite3-dev tk-dev libssl-dev openssl python3 python3-pip curl jq -y
+        fi
 
-        pull_musicbot_git
+        if [ "$INSTALL_BOT_BITS" == "1" ] ; then
+            pull_musicbot_git
+        fi
         ;;
 
     # Tested working 12.5  @  2024/03/31
@@ -609,24 +717,16 @@ case $DISTRO_NAME in
     # Tested working trixie  @  2024/09/05
     *"Debian GNU/Linux 12"*|*"Debian GNU/Linux trixie"*|*"Debian GNU/Linux sid"*)
         # Debian 12 uses system controlled python packages.
-        sudo apt-get update -y
-        sudo apt-get upgrade -y
-        sudo apt-get install build-essential libopus-dev libffi-dev libsodium-dev \
-            python3-full python3-dev python3-venv python3-pip git ffmpeg curl
+        if [ "$INSTALL_SYS_PKGS" == "1" ] ; then
+            sudo apt-get update -y
+            sudo apt-get upgrade -y
+            sudo apt-get install build-essential libopus-dev libffi-dev libsodium-dev \
+                python3-full python3-dev python3-venv python3-pip git ffmpeg curl
+        fi
 
-        # Create and activate a venv using python that was just installed.
-        find_python
-        $PyBin -m venv "${VenvDir}"
-        InstalledViaVenv=1
-        CloneDir="${VenvDir}/${CloneDir}"
-        # shellcheck disable=SC1091
-        source "${VenvDir}/bin/activate"
-        find_python
-
-        pull_musicbot_git
-        
-        # exit venv
-        deactiveate
+        if [ "$INSTALL_BOT_BITS" == "1" ] ; then
+            install_as_venv
+        fi
         ;;
 
     *)
@@ -638,19 +738,23 @@ case $DISTRO_NAME in
 # Legacy install, needs testing.
 # Modern Raspberry Pi OS does not return "Raspbian"
 *"Raspbian"*)
-    sudo apt-get update -y
-    sudo apt-get upgrade -y
-    sudo apt install python3-pip git libopus-dev ffmpeg curl
-    curl -o jq.tar.gz https://github.com/stedolan/jq/releases/download/jq-1.5/jq-1.5.tar.gz
-    tar -zxvf jq.tar.gz
-    cd jq-1.5 || exit_err "Fatal:  Could not change directory to jq-1.5"
-    ./configure && make && sudo make install
-    cd .. && rm -rf ./jq-1.5
-    pull_musicbot_git
+    if [ "$INSTALL_SYS_PKGS" == "1" ] ; then
+        sudo apt-get update -y
+        sudo apt-get upgrade -y
+        sudo apt install python3-pip git libopus-dev ffmpeg curl
+        curl -o jq.tar.gz https://github.com/stedolan/jq/releases/download/jq-1.5/jq-1.5.tar.gz
+        tar -zxvf jq.tar.gz
+        cd jq-1.5 || exit_err "Fatal:  Could not change directory to jq-1.5"
+        ./configure && make && sudo make install
+        cd .. && rm -rf ./jq-1.5
+    fi
+    if [ "$INSTALL_BOT_BITS" == "1" ] ; then
+        pull_musicbot_git
+    fi
     ;;
 
 *"CentOS"* )
-    # Get the full release name and version
+    # Get the full release name and version for CentOS
     if [ -f "/etc/redhat-release" ]; then
         DISTRO_NAME=$(cat /etc/redhat-release)
     fi
@@ -669,59 +773,66 @@ case $DISTRO_NAME in
     # Supported versions.
     *"CentOS 7"*)  # Tested 7.9 @ 2024/03/28
         # TODO:  CentOS 7 reaches EOL June 2024.
+        if [ "$INSTALL_SYS_PKGS" == "1" ] ; then
+            # Enable extra repos, as required for ffmpeg
+            # We DO NOT use the -y flag here.
+            sudo yum install epel-release
+            sudo yum localinstall --nogpgcheck https://download1.rpmfusion.org/free/el/rpmfusion-free-release-7.noarch.rpm
 
-        # Enable extra repos, as required for ffmpeg
-        # We DO NOT use the -y flag here.
-        sudo yum install epel-release
-        sudo yum localinstall --nogpgcheck https://download1.rpmfusion.org/free/el/rpmfusion-free-release-7.noarch.rpm
+            # Install available packages and libraries for building python 3.8+
+            sudo yum -y groupinstall "Development Tools"
+            sudo yum -y install opus-devel libffi-devel openssl-devel bzip2-devel \
+                git curl jq ffmpeg
 
-        # Install available packages and libraries for building python 3.8+
-        sudo yum -y groupinstall "Development Tools"
-        sudo yum -y install opus-devel libffi-devel openssl-devel bzip2-devel \
-            git curl jq ffmpeg
+            # Ask if we should build python
+            echo "We need to build python from source for your system. It will be installed using altinstall target."
+            read -rp "Would you like to continue ? [N/y]" BuildPython
+            if [ "${BuildPython,,}" == "y" ] || [ "${BuildPython,,}" == "yes" ] ; then
+                # Build python.
+                PyBuildVer="3.10.14"
+                PySrcDir="Python-${PyBuildVer}"
+                PySrcFile="${PySrcDir}.tgz"
 
-        # Ask if we should build python
-        echo "We need to build python from source for your system. It will be installed using altinstall target."
-        read -rp "Would you like to continue ? [N/y]" BuildPython
-        if [ "${BuildPython,,}" == "y" ] || [ "${BuildPython,,}" == "yes" ] ; then
-            # Build python.
-            PyBuildVer="3.10.14"
-            PySrcDir="Python-${PyBuildVer}"
-            PySrcFile="${PySrcDir}.tgz"
+                curl -o "$PySrcFile" "https://www.python.org/ftp/python/${PyBuildVer}/${PySrcFile}"
+                tar -xzf "$PySrcFile"
+                cd "${PySrcDir}" || exit_err "Fatal:  Could not change to python source directory."
 
-            curl -o "$PySrcFile" "https://www.python.org/ftp/python/${PyBuildVer}/${PySrcFile}"
-            tar -xzf "$PySrcFile"
-            cd "${PySrcDir}" || exit_err "Fatal:  Could not change to python source directory."
+                ./configure --enable-optimizations
+                sudo make altinstall
 
-            ./configure --enable-optimizations
-            sudo make altinstall
-
-            # Ensure python bin is updated with altinstall name.
-            find_python
-            RetVal=$?
-            if [ "$RetVal" == "0" ] ; then
-                # manually install pip package for the current user.
-                $PyBin <(curl -s https://bootstrap.pypa.io/get-pip.py)
-            else
-                echo "Error:  Could not find python on the PATH after installing it."
-                exit 1
+                # Ensure python bin is updated with altinstall name.
+                find_python
+                RetVal=$?
+                if [ "$RetVal" == "0" ] ; then
+                    # manually install pip package for the current user.
+                    $PyBin <(curl -s https://bootstrap.pypa.io/get-pip.py)
+                else
+                    echo "Error:  Could not find python on the PATH after installing it."
+                    exit 1
+                fi
             fi
         fi
 
-        pull_musicbot_git
+        if [ "$INSTALL_BOT_BITS" == "1" ] ; then
+            pull_musicbot_git
+        fi
         ;;
 
     *"CentOS Stream 8"*)  # Tested 2024/03/28
-        # Install extra repos, needed for ffmpeg.
-        # Do not use -y flag here.
-        sudo dnf install epel-release
-        sudo dnf install --nogpgcheck https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-8.noarch.rpm
-        sudo dnf config-manager --enable powertools
+        if [ "$INSTALL_SYS_PKGS" == "1" ] ; then
+            # Install extra repos, needed for ffmpeg.
+            # Do not use -y flag here.
+            sudo dnf install epel-release
+            sudo dnf install --nogpgcheck https://mirrors.rpmfusion.org/free/el/rpmfusion-free-release-8.noarch.rpm
+            sudo dnf config-manager --enable powertools
 
-        # Install available packages.
-        sudo yum -y install opus-devel libffi-devel git curl jq ffmpeg python39 python39-devel
+            # Install available packages.
+            sudo yum -y install opus-devel libffi-devel git curl jq ffmpeg python39 python39-devel
+        fi
 
-        pull_musicbot_git
+        if [ "$INSTALL_BOT_BITS" == "1" ] ; then
+            pull_musicbot_git
+        fi
         ;;
 
     # Currently unsupported.
@@ -734,18 +845,23 @@ case $DISTRO_NAME in
 
 # Legacy installer, needs testing.
 *"Darwin"*)
-    /usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)"
-    brew update
-    xcode-select --install
-    brew install python
-    brew install git
-    brew install ffmpeg
-    brew install opus
-    brew install libffi
-    brew install libsodium
-    brew install curl
-    brew install jq
-    pull_musicbot_git
+    if [ "$INSTALL_SYS_PKGS" == "1" ] ; then
+        /usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)"
+        brew update
+        xcode-select --install
+        brew install python
+        brew install git
+        brew install ffmpeg
+        brew install opus
+        brew install libffi
+        brew install libsodium
+        brew install curl
+        brew install jq
+    fi
+
+    if [ "$INSTALL_BOT_BITS" == "1" ] ; then
+        pull_musicbot_git
+    fi
     ;;
 
 *)
@@ -755,8 +871,10 @@ case $DISTRO_NAME in
 esac
 
 if ! [[ $DISTRO_NAME == *"Darwin"* ]]; then
-    configure_bot
-    setup_as_service
+    if [ "$INSTALL_BOT_BITS" == "1" ] ; then
+        configure_bot
+        setup_as_service
+    fi
 else
     echo "The bot has been successfully installed to your user directory"
     echo "You can configure the bot by navigating to the config folder, and modifying the contents of the options.ini and permissions.ini files"
