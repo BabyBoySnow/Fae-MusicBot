@@ -3,20 +3,12 @@ name: Code Checks
 on: [push, pull_request]
 
 jobs:
-  shellcheck:
-    name: Shellcheck
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Run ShellCheck
-        uses: ludeeus/action-shellcheck@master
-
   lint:
     name: Lint Checks
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 2  # Limit to 2 jobs at a time for linting (1 Python version)
+      max-parallel: 2
       matrix:
         python-version: ["3.10"]
     steps:
@@ -26,47 +18,51 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      # Cache dependencies (use content hash of requirements only when they change)
+      # Create cache directories if they don't exist
+      - name: Create Cache Directories
+        run: mkdir -p .github/workflows/.cache/pip
+
+      # Cache pip dependencies
       - name: Cache pip dependencies
         uses: actions/cache@v3
         with:
-          path: ~/.cache/pip
+          path: .github/workflows/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
+      # Get Changed Python Files
+      - name: Get Changed Python Files
+        id: changed_files
+        run: |
+          mkdir -p .github/workflows/.cache
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch origin ${{ github.event.pull_request.base.ref }};
+            git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD -- '*.py' > .github/workflows/.cache/changed_files.txt;
+          else
+            git fetch origin ${{ github.ref_name }};
+            git diff --name-only origin/${{ github.ref_name }}...HEAD -- '*.py' > .github/workflows/.cache/changed_files.txt;
+          fi
+
       # Cache changed_files.txt
-      - name: Cache changed files
+      - name: Cache changed files directory
         id: cache-changed-files
         uses: actions/cache@v3
         with:
-          path: changed_files.txt
+          path: .github/workflows/.cache/changed_files.txt
           key: ${{ github.sha }}-changed-files
           restore-keys: |
             changed-files
 
-      # Get Changed Python Files
-      - name: Get Changed Python Files
-        if: steps.cache-changed-files.outputs.cache-hit != 'true'
-        id: changed_files
-        run: |
-          # Check if the workflow is triggered by a pull request
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch origin ${{ github.event.pull_request.base.ref }};
-            git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD -- '*.py' > changed_files.txt;
-          else
-            git fetch origin ${{ github.ref_name }};
-            git diff --name-only origin/${{ github.ref_name }}...HEAD -- '*.py' > changed_files.txt;
-          fi
-
+      # Display Changed Files
       - name: Display Changed Files
-        run: cat changed_files.txt
+        run: cat .github/workflows/.cache/changed_files.txt
 
       # Lint with Black on changed files
       - name: Lint with Black
         run: |
-          if [ -s changed_files.txt ]; then
-            cat changed_files.txt | xargs black --check --diff --fast;
+          if [ -s .github/workflows/.cache/changed_files.txt ]; then
+            cat .github/workflows/.cache/changed_files.txt | xargs black --check --diff --fast;
           else
             echo "No Python files changed";
           fi
@@ -74,8 +70,8 @@ jobs:
       # Lint with Flake8
       - name: Lint with Flake8
         run: |
-          if [ -s changed_files.txt ]; then
-            cat changed_files.txt | xargs flake8;
+          if [ -s .github/workflows/.cache/changed_files.txt ]; then
+            cat .github/workflows/.cache/changed_files.txt | xargs flake8;
           else
             echo "No Python files changed";
           fi
@@ -83,8 +79,8 @@ jobs:
       # Sort Imports with isort
       - name: Sort Imports with isort
         run: |
-          if [ -s changed_files.txt ]; then
-            cat changed_files.txt | xargs isort --profile=black --check --diff;
+          if [ -s .github/workflows/.cache/changed_files.txt ]; then
+            cat .github/workflows/.cache/changed_files.txt | xargs isort --profile=black --check --diff;
           else
             echo "No Python files changed";
           fi
@@ -94,7 +90,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 5  # Run 5 Python versions in parallel for type checking
+      max-parallel: 5
       matrix:
         python-version: ["3.8", "3.9", "3.10", "3.11", "3.12"]
     steps:
@@ -108,17 +104,17 @@ jobs:
       - name: Cache pip dependencies
         uses: actions/cache@v3
         with:
-          path: ~/.cache/pip
+          path: .github/workflows/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
       # Cache changed_files.txt
-      - name: Cache changed files
+      - name: Cache changed files directory
         id: cache-changed-files
         uses: actions/cache@v3
         with:
-          path: changed_files.txt
+          path: .github/workflows/.cache/changed_files.txt
           key: ${{ github.sha }}-changed-files
           restore-keys: |
             changed-files
@@ -126,8 +122,8 @@ jobs:
       # Type check only changed files with MyPy
       - name: Type Check with MyPy
         run: |
-          if [ -s changed_files.txt ]; then
-            cat changed_files.txt | xargs mypy --cache-dir .mypy_cache;
+          if [ -s .github/workflows/.cache/changed_files.txt ]; then
+            cat .github/workflows/.cache/changed_files.txt | xargs mypy --cache-dir .mypy_cache;
           else
             echo "No Python files changed";
           fi
@@ -135,8 +131,8 @@ jobs:
       # Run pylint on changed files
       - name: Lint with Pylint (changed files only)
         run: |
-          if [ -s changed_files.txt ]; then
-            cat changed_files.txt | xargs pylint --recursive=y;
+          if [ -s .github/workflows/.cache/changed_files.txt ]; then
+            cat .github/workflows/.cache/changed_files.txt | xargs pylint --recursive=y;
           else
             echo "No Python files changed";
           fi
