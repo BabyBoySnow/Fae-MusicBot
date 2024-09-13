@@ -7,9 +7,9 @@ jobs:
     name: Shellcheck
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-    - name: Run ShellCheck
-      uses: ludeeus/action-shellcheck@master
+      - uses: actions/checkout@v3
+      - name: Run ShellCheck
+        uses: ludeeus/action-shellcheck@master
 
   lint:
     name: Lint Checks
@@ -20,68 +20,74 @@ jobs:
       matrix:
         python-version: ["3.10"]
     steps:
-    - uses: actions/checkout@v3
-    - name: Set up Python
-      uses: actions/setup-python@v3
-      with:
-        python-version: ${{ matrix.python-version }}
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v3
+        with:
+          python-version: ${{ matrix.python-version }}
 
-    # Cache dependencies (use content hash of requirements only when they change)
-    - name: Cache pip dependencies
-      uses: actions/cache@v3
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt') }}  
-        restore-keys: |
-          ${{ runner.os }}-pip-
+      # Cache dependencies (use content hash of requirements only when they change)
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
-    # Cache changed_files.txt
-    - name: Cache changed files
-      id: cache-changed-files
-      uses: actions/cache@v3
-      with:
-        path: changed_files.txt
-        key: ${{ github.sha }}-changed-files
-        restore-keys: |
-          changed-files
+      # Cache changed_files.txt
+      - name: Cache changed files
+        id: cache-changed-files
+        uses: actions/cache@v3
+        with:
+          path: changed_files.txt
+          key: ${{ github.sha }}-changed-files
+          restore-keys: |
+            changed-files
 
-    # Get list of changed Python files
-    - name: Get Changed Python Files
-      if: steps.cache-changed-files.outputs.cache-hit != 'true'
-      id: changed_files
-      run: |
-        git fetch origin main
-        git diff --name-only origin/main...HEAD -- '*.py' > changed_files.txt
+      # Get Changed Python Files
+      - name: Get Changed Python Files
+        if: steps.cache-changed-files.outputs.cache-hit != 'true'
+        id: changed_files
+        run: |
+          # Check if the workflow is triggered by a pull request
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch origin ${{ github.event.pull_request.base.ref }};
+            git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD -- '*.py' > changed_files.txt;
+          else
+            git fetch origin ${{ github.ref_name }};
+            git diff --name-only origin/${{ github.ref_name }}...HEAD -- '*.py' > changed_files.txt;
+          fi
 
-    - name: Display Changed Files
-      run: cat changed_files.txt
+      - name: Display Changed Files
+        run: cat changed_files.txt
 
-    # Lint with Black on changed files
-    - name: Lint with Black
-      run: |
-        if [ -s changed_files.txt ]; then
-          cat changed_files.txt | xargs black --check --diff --fast;
-        else
-          echo "No Python files changed";
-        fi
+      # Lint with Black on changed files
+      - name: Lint with Black
+        run: |
+          if [ -s changed_files.txt ]; then
+            cat changed_files.txt | xargs black --check --diff --fast;
+          else
+            echo "No Python files changed";
+          fi
 
-    # Lint with Flake8
-    - name: Lint with Flake8
-      run: |
-        if [ -s changed_files.txt ]; then
-          cat changed_files.txt | xargs flake8;
-        else
-          echo "No Python files changed";
-        fi
+      # Lint with Flake8
+      - name: Lint with Flake8
+        run: |
+          if [ -s changed_files.txt ]; then
+            cat changed_files.txt | xargs flake8;
+          else
+            echo "No Python files changed";
+          fi
 
-    # Sort Imports with isort
-    - name: Sort Imports with isort
-      run: |
-        if [ -s changed_files.txt ]; then
-          cat changed_files.txt | xargs isort --profile=black --check --diff;
-        else
-          echo "No Python files changed";
-        fi
+      # Sort Imports with isort
+      - name: Sort Imports with isort
+        run: |
+          if [ -s changed_files.txt ]; then
+            cat changed_files.txt | xargs isort --profile=black --check --diff;
+          else
+            echo "No Python files changed";
+          fi
 
   typecheck:
     name: Type Checks
@@ -92,45 +98,45 @@ jobs:
       matrix:
         python-version: ["3.8", "3.9", "3.10", "3.11", "3.12"]
     steps:
-    - uses: actions/checkout@v3
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v3
-      with:
-        python-version: ${{ matrix.python-version }}
+      - uses: actions/checkout@v3
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v3
+        with:
+          python-version: ${{ matrix.python-version }}
 
-    # Cache pip dependencies
-    - name: Cache pip dependencies
-      uses: actions/cache@v3
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-
+      # Cache pip dependencies
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
-    # Cache changed_files.txt
-    - name: Cache changed files
-      id: cache-changed-files
-      uses: actions/cache@v3
-      with:
-        path: changed_files.txt
-        key: ${{ github.sha }}-changed-files
-        restore-keys: |
-          changed-files
+      # Cache changed_files.txt
+      - name: Cache changed files
+        id: cache-changed-files
+        uses: actions/cache@v3
+        with:
+          path: changed_files.txt
+          key: ${{ github.sha }}-changed-files
+          restore-keys: |
+            changed-files
 
-    # Type check only changed files with MyPy
-    - name: Type Check with MyPy
-      run: |
-        if [ -s changed_files.txt ]; then
-          cat changed_files.txt | xargs mypy --cache-dir .mypy_cache;
-        else
-          echo "No Python files changed";
-        fi
+      # Type check only changed files with MyPy
+      - name: Type Check with MyPy
+        run: |
+          if [ -s changed_files.txt ]; then
+            cat changed_files.txt | xargs mypy --cache-dir .mypy_cache;
+          else
+            echo "No Python files changed";
+          fi
 
-    # Run pylint on changed files
-    - name: Lint with Pylint (changed files only)
-      run: |
-        if [ -s changed_files.txt ]; then
-          cat changed_files.txt | xargs pylint --recursive=y;
-        else
-          echo "No Python files changed";
-        fi
+      # Run pylint on changed files
+      - name: Lint with Pylint (changed files only)
+        run: |
+          if [ -s changed_files.txt ]; then
+            cat changed_files.txt | xargs pylint --recursive=y;
+          else
+            echo "No Python files changed";
+          fi
