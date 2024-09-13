@@ -35,54 +35,27 @@ jobs:
       - name: Get Changed Python Files
         id: changed_files
         run: |
-          mkdir -p .github/workflows/.cache
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             git fetch origin ${{ github.event.pull_request.base.ref }};
-            git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD -- '*.py' > .github/workflows/.cache/changed_files.txt;
+            git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD -- '*.py' > changed_files.txt;
           else
             git fetch origin ${{ github.ref_name }};
-            git diff --name-only origin/${{ github.ref_name }}...HEAD -- '*.py' > .github/workflows/.cache/changed_files.txt;
+            git diff --name-only origin/${{ github.ref_name }}...HEAD -- '*.py' > changed_files.txt;
           fi
-
-      # Cache changed_files.txt
-      - name: Cache changed files directory
-        id: cache-changed-files
-        uses: actions/cache@v3
-        with:
-          path: .github/workflows/.cache/changed_files.txt
-          key: ${{ github.sha }}-changed-files
-          restore-keys: |
-            changed-files
 
       # Display Changed Files
       - name: Display Changed Files
-        run: cat .github/workflows/.cache/changed_files.txt
+        run: cat changed_files.txt
 
-      # Lint with Black on changed files
-      - name: Lint with Black
+      # Lint with Black, Flake8, and isort on changed files
+      - name: Lint with Black, Flake8, and isort
         run: |
-          if [ -s .github/workflows/.cache/changed_files.txt ]; then
-            cat .github/workflows/.cache/changed_files.txt | xargs black --check --diff --fast;
+          if [ -s changed_files.txt ]; then
+            cat changed_files.txt | xargs black --check --diff --fast
+            cat changed_files.txt | xargs flake8
+            cat changed_files.txt | xargs isort --profile=black --check --diff
           else
-            echo "No Python files changed";
-          fi
-
-      # Lint with Flake8
-      - name: Lint with Flake8
-        run: |
-          if [ -s .github/workflows/.cache/changed_files.txt ]; then
-            cat .github/workflows/.cache/changed_files.txt | xargs flake8;
-          else
-            echo "No Python files changed";
-          fi
-
-      # Sort Imports with isort
-      - name: Sort Imports with isort
-        run: |
-          if [ -s .github/workflows/.cache/changed_files.txt ]; then
-            cat .github/workflows/.cache/changed_files.txt | xargs isort --profile=black --check --diff;
-          else
-            echo "No Python files changed";
+            echo "No Python files changed"
           fi
 
   typecheck:
@@ -109,30 +82,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      # Cache changed_files.txt
-      - name: Cache changed files directory
-        id: cache-changed-files
-        uses: actions/cache@v3
-        with:
-          path: .github/workflows/.cache/changed_files.txt
-          key: ${{ github.sha }}-changed-files
-          restore-keys: |
-            changed-files
-
-      # Type check only changed files with MyPy
-      - name: Type Check with MyPy
+      # Type check only changed files with MyPy and Pylint
+      - name: Type Check with MyPy and Lint with Pylint
         run: |
-          if [ -s .github/workflows/.cache/changed_files.txt ]; then
-            cat .github/workflows/.cache/changed_files.txt | xargs mypy --cache-dir .mypy_cache;
+          if [ -s changed_files.txt ]; then
+            cat changed_files.txt | xargs mypy --cache-dir .mypy_cache
+            cat changed_files.txt | xargs pylint --recursive=y
           else
-            echo "No Python files changed";
-          fi
-
-      # Run pylint on changed files
-      - name: Lint with Pylint (changed files only)
-        run: |
-          if [ -s .github/workflows/.cache/changed_files.txt ]; then
-            cat .github/workflows/.cache/changed_files.txt | xargs pylint --recursive=y;
-          else
-            echo "No Python files changed";
+            echo "No Python files changed"
           fi
