@@ -8,6 +8,7 @@
 [![Imports: isort](https://img.shields.io/badge/%20imports-isort-%231674b1?style=flat&labelColor=ef8336)](https://pycqa.github.io/isort/)
 [![Checked with mypy](https://www.mypy-lang.org/static/mypy_badge.svg)](https://mypy-lang.org/)
 ![Static Badge](https://img.shields.io/badge/Lint-Pylint_and_Flake8-blue?style=flat)
+[![Code Checks](https://github.com/BabyBoySnow/Fae-MusicBot/actions/workflows/py-checks.yml/badge.svg)](https://github.com/BabyBoySnow/Fae-MusicBot/actions/workflows/py-checks.yml)
 
 
 MusicBot is the original Discord music bot written for [Python](https://www.python.org "Python homepage") 3.8+, using the [discord.py](https://github.com/Rapptz/discord.py) library. It plays requested songs from YouTube and other services into a Discord server (or multiple servers). If the queue is empty, MusicBot will play a list of existing songs that is configurable. The bot features a permission system, allowing owners to restrict commands to certain people. MusicBot is capable of streaming live media into a voice channel (experimental).
