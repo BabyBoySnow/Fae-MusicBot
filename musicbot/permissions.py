@@ -33,6 +33,7 @@ class PermissionsDefaults:
 
     command_whitelist: Set[str] = set()
     command_blacklist: Set[str] = set()
+    advanced_commandlists: bool = False
     ignore_non_voice: Set[str] = set()
     grant_to_roles: Set[int] = set()
     user_list: Set[int] = set()
@@ -74,6 +75,7 @@ class PermissiveDefaults(PermissionsDefaults):
 
     command_whitelist: Set[str] = set()
     command_blacklist: Set[str] = set()
+    advanced_commandlists: bool = False
     ignore_non_voice: Set[str] = set()
     grant_to_roles: Set[int] = set()
     user_list: Set[int] = set()
@@ -323,7 +325,9 @@ class PermissionGroup:
             default=defaults.command_whitelist,
             comment=(
                 "List of command names allowed for use, separated by spaces.\n"
-                "This option overrides CommandBlacklist if set."
+                "Sub-command access can be controlled by adding _ and the sub-command name.\n"
+                "That is `config_set` grants only the `set` sub-command of the config command.\n"
+                "This option overrides CommandBlacklist if set.\n"
             ),
             empty_display_val="(All allowed)",
         )
@@ -338,6 +342,17 @@ class PermissionGroup:
                 "Will not work if CommandWhitelist is set!"
             ),
             empty_display_val="(None denied)",
+        )
+        self.advanced_commandlists = self._mgr.register.init_option(
+            section=name,
+            option="AdvancedCommandLists",
+            dest="advanced_commandlists",
+            getter="getboolean",
+            default=defaults.advanced_commandlists,
+            comment=(
+                "When enabled, CommandBlacklist and CommandWhitelist are used together.\n"
+                "Only commands in the whitelist are allowed, however sub-commands may be denied by the blacklist.\n"
+            ),
         )
         self.ignore_non_voice = self._mgr.register.init_option(
             section=name,
@@ -477,14 +492,15 @@ class PermissionGroup:
             getter="getstrset",
             default=defaults.extractors,
             comment=(
-                "List of yt_dlp extractor keys, separated by spaces, that are allowed to be used.\n"
-                "Extractor names are matched partially, to allow for strict and flexible permissions.\n"
-                "Example:  `youtube:search` allows only search, but `youtube` allows all of youtube extractors.\n"
-                "When empty, hard-coded defaults are used. If you set this, you may want to add those defaults as well.\n"
-                f"To allow all extractors, add `{PERMS_ALLOW_ALL_EXTRACTOR_NAME}` to the list of extractors.\n"
-                "Services supported by yt_dlp shown here:  https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md \n"
+                "Specify yt-dlp extractor names, separated by spaces, that are allowed to be used.\n"
+                "When empty, hard-coded defaults are used. The defaults are displayed above, but may change between versions.\n"
+                f"To allow all extractors, add `{PERMS_ALLOW_ALL_EXTRACTOR_NAME}` without quotes to the list.\n"
+                "\n"
+                "Services/extractors supported by yt-dlp are listed here:\n"
+                "  https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md \n"
+                "\n"
                 "MusicBot also provides one custom service `spotify:musicbot` to enable or disable spotify API extraction.\n"
-                "NOTICE: MusicBot might not support all services available to yt_dlp!\n"
+                "NOTICE: MusicBot might not support all services available to yt-dlp!\n"
             ),
             empty_display_val="(All allowed)",
         )
@@ -510,23 +526,37 @@ class PermissionGroup:
         if uid in self.user_list:
             self.user_list.remove(uid)
 
-    def can_use_command(self, command: str) -> None:
+    def can_use_command(self, command: str, sub: str = "") -> bool:
         """
-        Test if command is enabled in this permission group.
+        Test if the group can use the given command or sub-command.
 
-        :raises:  PermissionsError  if command is denied from use.
+        :param: command:  The command name to test.
+        :param: sub:      The sub-command argument of the command being tested.
+        
+        :returns:  boolean:  False if not allowed, True otherwise.
         """
-        if self.command_whitelist and command not in self.command_whitelist:
-            raise PermissionsError(
-                f"This command is not enabled for your group ({self.name}).",
-                expire_in=20,
-            )
+        csub = f"{command}_{sub}"
+        terms = [command]
+        if sub:
+            terms.append(csub)
 
-        if self.command_blacklist and command in self.command_blacklist:
-            raise PermissionsError(
-                f"This command is disabled for your group ({self.name}).",
-                expire_in=20,
-            )
+        if not self.advanced_commandlists:
+            if self.command_whitelist and all(c not in self.command_whitelist for c in terms):
+                return False
+            
+            if self.command_blacklist and any(c in self.command_blacklist for c in terms):
+                return False
+
+        else:
+            if self.command_whitelist and all(x not in self.command_whitelist for x in terms):
+                return False
+
+            if sub and command in self.command_whitelist and csub in self.command_blacklist:
+                return False
+
+            if any(c in self.command_blacklist and c in self.command_whitelist for c in terms):
+                return False
+        return True
 
     def can_use_extractor(self, extractor: str) -> None:
         """
@@ -694,3 +724,97 @@ class PermissionOptionRegistry(ConfigOptionRegistry):
 
             conf_value = getattr(group, option.dest)
         return self._value_to_ini(conf_value, option.getter)
+
+    def write_default_ini(self, filename: pathlib.Path) -> bool:
+        """Uses registry to generate an example_permissions.ini file."""
+        if not isinstance(self._config, Permissions):
+            raise RuntimeError("Dev bug, Permissions object expcted.")
+
+        if DEFAULT_OWNER_GROUP_NAME not in self._config.groups:
+            self._config.groups[DEFAULT_OWNER_GROUP_NAME] = self._config._generate_permissive_group(
+                DEFAULT_OWNER_GROUP_NAME
+            )
+        if DEFAULT_PERMS_GROUP_NAME not in self._config.groups:
+            self._config.add_group(DEFAULT_PERMS_GROUP_NAME)
+
+        try:
+            cu = configupdater.ConfigUpdater()
+            cu.optionxform = str  # type: ignore
+
+            # add the default sections.
+            cu.add_section(DEFAULT_OWNER_GROUP_NAME)
+            cu.add_section(DEFAULT_PERMS_GROUP_NAME)
+
+            # create the comment documentation and fill in defaults for each section.
+            docs = ""
+            for opt in self.option_list:
+                if opt.section not in [DEFAULT_OWNER_GROUP_NAME, DEFAULT_PERMS_GROUP_NAME]:
+                    continue
+                dval = self.to_ini(opt, use_default=True)
+                cu[opt.section][opt.option] = dval
+                if opt.section == DEFAULT_PERMS_GROUP_NAME:
+                    if opt.comment_args:
+                        comment = opt.comment % opt.comment_args
+                    else:
+                        comment = opt.comment
+                    comment = "".join(f"    {c}\n" for c in comment.split("\n")).rstrip()
+                    docs += f" {opt.option} = {dval}\n{comment}\n\n"
+
+            # add comments to head of file.
+            adder = cu[DEFAULT_OWNER_GROUP_NAME].add_before
+            head_comment = (
+                "This is the permissions file for MusicBot. Do not edit this file using Notepad.\n"
+                "Use Notepad++ or a code editor like Visual Studio Code.\n"
+                "For help, see: https://just-some-bots.github.io/MusicBot/ \n"
+                "\n"
+                "This file was generated by MusicBot, it contains all options set to their default values.\n"
+                "\n"
+                "Basics:\n"
+                "- Lines starting with semicolons (;) are comments, and are ignored.\n"
+                "- Words in square brackets [ ] are permission group names.\n"
+                "- Group names must be unique, and cannot be duplicated.\n"
+                "- Each group must have at least one permission option defined.\n"
+                "- [Default] is a reserved section. Users without a specific group assigned will use it.\n"
+                "- [Owner (auto)] is a reserved section that cannot be edited.\n"
+                "\nAvailable Options:\n"
+                f"{docs}"
+            ).strip()
+            for line in head_comment.split("\n"):
+                adder.comment(line, comment_prefix=";")
+            adder.space()
+            adder.space()
+            
+            # add owner section comment
+            owner_comment = (
+                "This permission group is used by the Owner only, and cannot be edited at all.\n"
+                "It grants all access to MusicBot for the user specified in OwnerID config option."
+            )
+            for line in owner_comment.split("\n"):
+                adder.comment(line, comment_prefix=";")
+
+            # add default section comment
+            default_comment = (
+                "This is the default permission group. It cannot be deleted, or renamed.\n"
+                "All users without explicit group assignment will be placed in this group.\n"
+                "The options GrantToRoles and UserList are effectively ignored in this group."
+            )
+            adder = cu[DEFAULT_PERMS_GROUP_NAME].add_before
+            adder.space()
+            adder.space()
+            for line in default_comment.split("\n"):
+                adder.comment(line, comment_prefix=";")
+
+            with open(filename, "w", encoding="utf8") as fp:
+                cu.write(fp)
+
+            return True
+        except (
+            configparser.DuplicateSectionError,
+            configparser.ParsingError,
+            OSError,
+            AttributeError,
+        ):
+            log.exception("Failed to save default INI file at:  %s", filename)
+            return False
+
+
