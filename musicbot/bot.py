@@ -7560,12 +7560,13 @@ class MusicBot(discord.Client):
             self.config.register.write_default_ini(pathlib.Path("./config/ex_opts.ini"))
 
         if cfg == "perms":
-            self.permissions.register.write_default_ini(pathlib.Path("./config/ex_perms.ini"))
+            self.permissions.register.write_default_ini(
+                pathlib.Path("./config/ex_perms.ini")
+            )
 
         return Response(
             "Saved the requested INI file to disk. Go check it", delete_after=20
         )
-
 
     @owner_only
     @command_helper(
