@@ -8,7 +8,7 @@ import re
 import sys
 import unicodedata
 from functools import wraps
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Set, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Iterable, List, Set, Union
 
 # protected imports to keep run.py from breaking on missing packages.
 try:
@@ -49,6 +49,8 @@ def _add_logger_level(levelname: str, level: int, *, func_name: str = "") -> Non
     _func_prototype = (
         "def {logger_func_name}(self, message, *args, **kwargs):\n"
         "    if self.isEnabledFor({levelname}):\n"
+        "        if os.name == 'nt':\n"
+        "            kwargs.setdefault('stacklevel', 1)\n"
         "        self._log({levelname}, message, args, **kwargs)"
     )
 
@@ -132,26 +134,27 @@ def setup_loggers() -> None:
     if COLORLOG_LOADED:
         sformatter = colorlog.LevelFormatter(
             fmt={
-                "DEBUG": "{log_color}[{levelname}:{module}] {message}",
-                "INFO": "{log_color}{message}",
-                "WARNING": "{log_color}{levelname}: {message}",
-                "ERROR": "{log_color}[{levelname}:{module}] {message}",
+                # Organized by level number in descending order.
                 "CRITICAL": "{log_color}[{levelname}:{module}] {message}",
-                "EVERYTHING": "{log_color}[{levelname}:{module}] {message}",
-                "NOISY": "{log_color}[{levelname}:{module}] {message}",
+                "ERROR": "{log_color}[{levelname}:{module}] {message}",
+                "WARNING": "{log_color}{levelname}: {message}",
+                "INFO": "{log_color}{message}",
+                "DEBUG": "{log_color}[{levelname}:{module}] {message}",
                 "VOICEDEBUG": "{log_color}[{levelname}:{module}][{relativeCreated:.9f}] {message}",
                 "FFMPEG": "{log_color}[{levelname}:{module}][{relativeCreated:.9f}] {message}",
+                "NOISY": "{log_color}[{levelname}:{module}] {message}",
+                "EVERYTHING": "{log_color}[{levelname}:{module}] {message}",
             },
             log_colors={
-                "DEBUG": "cyan",
-                "INFO": "white",
-                "WARNING": "yellow",
-                "ERROR": "red",
                 "CRITICAL": "bold_red",
-                "EVERYTHING": "bold_cyan",
-                "NOISY": "bold_white",
-                "FFMPEG": "bold_purple",
+                "ERROR": "red",
+                "WARNING": "yellow",
+                "INFO": "white",
+                "DEBUG": "cyan",
                 "VOICEDEBUG": "purple",
+                "FFMPEG": "bold_purple",
+                "NOISY": "bold_white",
+                "EVERYTHING": "bold_cyan",
             },
             style="{",
             datefmt="",
@@ -182,6 +185,9 @@ def setup_loggers() -> None:
     # initially set discord logging to debug, it will be changed when config is loaded.
     dlogger.setLevel(logging.DEBUG)
 
+    # Set a flag to indicate our logs are open.
+    setattr(logging, "_mb_logs_open", True)
+
 
 def muffle_discord_console_log() -> None:
     """
@@ -206,7 +212,8 @@ def mute_discord_console_log() -> None:
     for h in dlogger.handlers:
         if getattr(h, "terminator", None) == "":
             dlogger.removeHandler(h)
-            print()
+    # for console output carriage return post muffled log string.
+    print()
 
 
 def set_logging_level(level: int, override: bool = False) -> None:
@@ -240,13 +247,11 @@ def set_logging_level(level: int, override: bool = False) -> None:
         dlogger.setLevel(level)
 
 
-# TODO: perhaps add config file option for max logs kept.
 def set_logging_max_kept_logs(number: int) -> None:
     """Inform the logger how many logs it should keep."""
     setattr(logging, "mb_max_logs_kept", number)
 
 
-# TODO: perhaps add a config file option for date format.
 def set_logging_rotate_date_format(sftime: str) -> None:
     """Inform the logger how it should format rotated file date strings."""
     setattr(logging, "mb_rot_date_fmt", sftime)
@@ -254,8 +259,13 @@ def set_logging_rotate_date_format(sftime: str) -> None:
 
 def shutdown_loggers() -> None:
     """Removes all musicbot and discord log handlers"""
+    if not hasattr(logging, "_mb_logs_open"):
+        return
+
     # This is the last log line of the logger session.
     log.info("MusicBot loggers have been called to shutdown.")
+
+    setattr(logging, "_mb_logs_open", False)
 
     logger = logging.getLogger("musicbot")
     for handler in logger.handlers:
@@ -286,6 +296,11 @@ def rotate_log_files(max_kept: int = -1, date_fmt: str = "") -> None:
     :param: max_kept:  number of old logs to keep.
     :param: date_fmt:  format compatible with datetime.strftime() for rotated filename.
     """
+    if hasattr(logging, "_mb_logs_rotated"):
+        if log.getEffectiveLevel() <= logging.DEBUG:
+            print("Logs already rotated.")
+        return
+
     # Use the input arguments or fall back to settings or defaults.
     if max_kept <= -1:
         max_kept = getattr(logging, "mb_max_logs_kept", DEFAULT_LOGS_KEPT)
@@ -299,6 +314,8 @@ def rotate_log_files(max_kept: int = -1, date_fmt: str = "") -> None:
 
     # Rotation can be disabled by setting 0.
     if not max_kept:
+        if log.getEffectiveLevel() <= logging.DEBUG:
+            print("No logs rotated.")
         return
 
     # Format a date that will be used for files rotated now.
@@ -341,6 +358,8 @@ def rotate_log_files(max_kept: int = -1, date_fmt: str = "") -> None:
         for path in logglob[max_kept:]:
             if path.is_file():
                 path.unlink()
+
+    setattr(logging, "_mb_logs_rotated", True)
 
 
 def load_file(
@@ -432,39 +451,6 @@ def paginate(
         chunks.append(currentchunk)
 
     return chunks
-
-
-def instance_diff(obj1: Any, obj2: Any) -> Dict[str, Tuple[Any, Any]]:
-    """
-    Compute a dict showing which attributes have changed between two given objects.
-    Objects must be of the same type and have __slots__ or __dict__.
-    """
-    if type(obj1) is not type(obj2):
-        raise ValueError("Objects must be of the same type to get differences.")
-
-    changes: Dict[str, Tuple[Any, Any]] = {}
-    keys = set()
-    if hasattr(obj1, "__slots__") and hasattr(obj2, "__slots__"):
-        vars1 = getattr(obj1, "__slots__", [])
-        vars2 = getattr(obj2, "__slots__", [])
-        if isinstance(vars1, list) and isinstance(vars2, list):
-            keys = set(vars1 + vars2)
-    elif hasattr(obj1, "__dict__") and hasattr(obj2, "__dict__"):
-        vars1 = getattr(obj1, "__dict__", {})
-        vars2 = getattr(obj2, "__dict__", {})
-        if isinstance(vars1, dict) and isinstance(vars2, dict):
-            keys = set(list(vars1.keys()) + list(vars2.keys()))
-    else:
-        raise ValueError(
-            f"Objects don't have __slots__ or __dict__ attribute: ({type(obj1)}, {type(obj2)})"
-        )
-
-    for key in keys:
-        val1 = getattr(obj1, key, None)
-        val2 = getattr(obj2, key, None)
-        if val1 != val2:
-            changes[key] = (val1, val2)
-    return changes
 
 
 def _func_() -> str:
@@ -646,10 +632,13 @@ def format_song_duration(seconds: Union[int, float, datetime.timedelta]) -> str:
 
     # Simply remove any microseconds from the delta.
     time_delta = str(seconds).split(".", maxsplit=1)[0]
+    t_hours = seconds.seconds / 3600
 
-    # Check the hours portion for empty 0 and remove it.
-    duration_array = time_delta.split(":")
-    return time_delta if int(duration_array[0]) > 0 else ":".join(duration_array[1:])
+    # if hours is 0 remove it.
+    if seconds.days == 0 and t_hours < 1:
+        duration_array = time_delta.split(":")
+        return ":".join(duration_array[1:])
+    return time_delta
 
 
 def format_size_from_bytes(size_bytes: int) -> str:
@@ -742,6 +731,33 @@ def format_time_to_seconds(time_str: Union[str, int]) -> int:
     if isinstance(time_str, int):
         return time_str
 
+    # support HH:MM:SS notations like those from timedelta.__str__
+    hms_total = 0
+    if ":" in time_str:
+        parts = time_str.split()
+        for part in parts:
+            bits = part.split(":")
+            part_sec = 0
+            try:
+                # format is MM:SS
+                if len(bits) == 2:
+                    m = int(bits[0])
+                    s = int(bits[1])
+                    part_sec += (m * 60) + s
+                # format is HH:MM:SS
+                elif len(bits) == 3:
+                    h = int(bits[0] or 0)
+                    m = int(bits[1])
+                    s = int(bits[2] or 0)
+                    part_sec += (h * 3600) + (m * 60) + s
+                # format is not supported.
+                else:
+                    continue
+                hms_total += part_sec
+                time_str = time_str.replace(part, "")
+            except (ValueError, TypeError):
+                continue
+
     # TODO: find a good way to make this i18n friendly.
     time_lex = re.compile(r"(\d*\.?\d+)\s*(y|d|h|m|s)?", re.I)
     unit_seconds = {
@@ -751,7 +767,7 @@ def format_time_to_seconds(time_str: Union[str, int]) -> int:
         "m": 60,
         "s": 1,
     }
-    total_sec = 0
+    total_sec = hms_total
     for value, unit in time_lex.findall(time_str):
         if not unit:
             unit = "s"

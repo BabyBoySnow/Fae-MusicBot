@@ -2,7 +2,6 @@ import asyncio
 import inspect
 import json
 import logging
-import pathlib
 import pydoc
 from collections import defaultdict
 from typing import (
@@ -20,12 +19,14 @@ from typing import (
 
 import discord
 
+from .constants import DATA_GUILD_FILE_OPTIONS
 from .json import Json
 from .utils import _get_variable
 
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from .autoplaylist import AutoPlaylist
     from .bot import MusicBot
     from .config import Config
 
@@ -57,9 +58,7 @@ class GuildAsyncEvent(asyncio.Event):
 
 class GuildSpecificData:
     """
-    A typed collection of data specific to each guild/server.
-    This could replace the defaultdict implementation...
-    Currently unused.
+    A typed collection of data specific to each guild/discord server.
     """
 
     def __init__(self, bot: "MusicBot") -> None:
@@ -76,17 +75,27 @@ class GuildSpecificData:
         self._prefix_history: Set[str] = set()
         self._events: DefaultDict[str, GuildAsyncEvent] = defaultdict(GuildAsyncEvent)
         self._file_lock: asyncio.Lock = asyncio.Lock()
+        self._loading_lock: asyncio.Lock = asyncio.Lock()
         self._is_file_loaded: bool = False
 
         # Members below are available for public use.
         self.last_np_msg: Optional["discord.Message"] = None
-        self.availability_paused: bool = False
-        self.auto_paused: bool = False
+        self.last_played_song_subject: str = ""
+        self.follow_user: Optional["discord.Member"] = None
+        self.auto_join_channel: Optional[
+            Union["discord.VoiceChannel", "discord.StageChannel"]
+        ] = None
+        self.autoplaylist: "AutoPlaylist" = self._bot.playlist_mgr.get_default()
+        self.current_playing_url: str = ""
 
         # create a task to load any persistent guild options.
         # in theory, this should work out fine.
-        if bot.loop:
-            bot.loop.create_task(self.load_guild_options_file())
+        bot.create_task(self.load_guild_options_file(), name="MB_LoadGuildOptions")
+        bot.create_task(self.autoplaylist.load(), name="MB_LoadAPL")
+
+    def is_ready(self) -> bool:
+        """A status indicator for fully loaded server data."""
+        return self._is_file_loaded and self._guild_id != 0
 
     def _lookup_guild_id(self) -> int:
         """
@@ -104,6 +113,20 @@ class GuildSpecificData:
                 return key
         return 0
 
+    async def get_played_history(self) -> Optional["AutoPlaylist"]:
+        """Get the history playlist for this guild, if enabled."""
+        if not self._bot.config.enable_queue_history_guilds:
+            return None
+
+        if not self.is_ready():
+            return None
+
+        pl = self._bot.playlist_mgr.get_playlist(f"history-{self._guild_id}.txt")
+        pl.create_file()
+        if not pl.loaded:
+            await pl.load()
+        return pl
+
     @property
     def command_prefix(self) -> str:
         """
@@ -119,8 +142,14 @@ class GuildSpecificData:
     @command_prefix.setter
     def command_prefix(self, value: str) -> None:
         """Set the value of command_prefix"""
+        if not value:
+            raise ValueError("Cannot set an empty prefix.")
+
         # update prefix history
-        self._prefix_history.add(self._command_prefix)
+        if not self._command_prefix:
+            self._prefix_history.add(self._bot_config.command_prefix)
+        else:
+            self._prefix_history.add(self._command_prefix)
 
         # set prefix value
         self._command_prefix = value
@@ -130,11 +159,23 @@ class GuildSpecificData:
             self._prefix_history.pop()
 
     @property
-    def command_prefix_history(self) -> List[str]:
-        """Get the prefix history from this session, including the current prefix."""
+    def command_prefix_list(self) -> List[str]:
+        """
+        Get the prefix list for this guild.
+        It includes a history of prefix changes since last restart as well.
+        """
         history = list(self._prefix_history)
+
+        # add self mention to invoke list.
+        if self._bot_config.commands_via_mention and self._bot.user:
+            history.append(f"<@{self._bot.user.id}>")
+
+        # Add current prefix to list.
         if self._command_prefix:
             history = [self._command_prefix] + history
+        else:
+            history = [self._bot_config.command_prefix] + history
+
         return history
 
     def get_event(self, name: str) -> GuildAsyncEvent:
@@ -149,44 +190,56 @@ class GuildSpecificData:
         server-specific options intended to persist through shutdowns.
         This method only supports per-server command prefix currently.
         """
-        if self._guild_id == 0:
-            self._guild_id = self._lookup_guild_id()
-            if self._guild_id == 0:
-                log.error(
-                    "Cannot load data for guild with ID 0. This is likely a bug in the code!"
-                )
-                return
-
-        opt_file = pathlib.Path(f"data/{self._guild_id}/options.json")
-        if not opt_file.is_file():
-            log.debug("No file for guild %s/%s", self._guild_id, self._guild_name)
+        if self._loading_lock.locked():
             return
 
-        async with self._file_lock:
-            try:
-                log.debug(
-                    "Loading guild data for guild with ID:  %s/%s",
-                    self._guild_id,
-                    self._guild_name,
-                )
-                options = Json(opt_file)
+        async with self._loading_lock:
+            if self._guild_id == 0:
+                self._guild_id = self._lookup_guild_id()
+                if self._guild_id == 0:
+                    log.error(
+                        "Cannot load data for guild with ID 0. This is likely a bug in the code!"
+                    )
+                    return
+
+            opt_file = self._bot_config.data_path.joinpath(
+                str(self._guild_id), DATA_GUILD_FILE_OPTIONS
+            )
+            if not opt_file.is_file():
+                log.debug("No file for guild %s/%s", self._guild_id, self._guild_name)
                 self._is_file_loaded = True
-            except OSError:
-                log.exception(
-                    "An OS error prevented reading guild data file:  %s",
-                    opt_file,
-                )
                 return
 
-        guild_prefix = options.get("command_prefix", None)
-        if guild_prefix:
-            self._command_prefix = guild_prefix
-            log.info(
-                "Guild %s/%s has custom command prefix: %s",
-                self._guild_id,
-                self._guild_name,
-                self._command_prefix,
-            )
+            async with self._file_lock:
+                try:
+                    log.debug(
+                        "Loading guild data for guild with ID:  %s/%s",
+                        self._guild_id,
+                        self._guild_name,
+                    )
+                    options = Json(opt_file)
+                    self._is_file_loaded = True
+                except OSError:
+                    log.exception(
+                        "An OS error prevented reading guild data file:  %s",
+                        opt_file,
+                    )
+                    return
+
+            guild_prefix = options.get("command_prefix", None)
+            if guild_prefix:
+                self._command_prefix = guild_prefix
+                log.info(
+                    "Guild %s/%s has custom command prefix: %s",
+                    self._guild_id,
+                    self._guild_name,
+                    self._command_prefix,
+                )
+
+            guild_playlist = options.get("auto_playlist", None)
+            if guild_playlist:
+                self.autoplaylist = self._bot.playlist_mgr.get_playlist(guild_playlist)
+                await self.autoplaylist.load()
 
     async def save_guild_options_file(self) -> None:
         """
@@ -199,10 +252,19 @@ class GuildSpecificData:
             )
             return
 
-        opt_file = pathlib.Path(f"data/{self._guild_id}/options.json")
+        opt_file = self._bot_config.data_path.joinpath(
+            str(self._guild_id), DATA_GUILD_FILE_OPTIONS
+        )
+
+        auto_playlist = None
+        if self.autoplaylist is not None:
+            auto_playlist = self.autoplaylist.filename
 
         # Prepare a dictionary to store our options.
-        opt_dict = {"command_prefix": self._command_prefix}
+        opt_dict = {
+            "command_prefix": self._command_prefix,
+            "auto_playlist": auto_playlist,
+        }
 
         async with self._file_lock:
             try:

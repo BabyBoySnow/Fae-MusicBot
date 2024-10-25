@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sys
+import time
 from enum import Enum
 from threading import Thread
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
@@ -11,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 from discord import AudioSource, FFmpegPCMAudio, PCMVolumeTransformer, VoiceClient
 
 from .constructs import Serializable, Serializer, SkipState
-from .entry import StreamPlaylistEntry, URLPlaylistEntry
+from .entry import LocalFilePlaylistEntry, StreamPlaylistEntry, URLPlaylistEntry
 from .exceptions import FFmpegError, FFmpegWarning
 from .lib.event_emitter import EventEmitter
 
@@ -24,7 +25,7 @@ else:
     AsyncFuture = asyncio.Future
 
 # Type alias
-EntryTypes = Union[URLPlaylistEntry, StreamPlaylistEntry]
+EntryTypes = Union[URLPlaylistEntry, StreamPlaylistEntry, LocalFilePlaylistEntry]
 
 log = logging.getLogger(__name__)
 
@@ -46,27 +47,54 @@ class SourcePlaybackCounter(AudioSource):
     def __init__(
         self,
         source: PCMVolumeTransformer[FFmpegPCMAudio],
-        progress: int = 0,
+        start_time: float = 0,
+        playback_speed: float = 1.0,
     ) -> None:
         """
         Manage playback source and attempt to count progress frames used
         to measure playback progress.
+
+        :param: start_time:  A time in seconds that was used in ffmpeg -ss flag.
         """
+        # NOTE: PCMVolumeTransformer will let you set any crazy value.
+        # But internally it limits between 0 and 2.0.
         self._source = source
-        self.progress = progress
+        self._num_reads: int = 0
+        self._start_time: float = start_time
+        self._playback_speed: float = playback_speed
 
     def read(self) -> bytes:
         res = self._source.read()
         if res:
-            self.progress += 1
+            self._num_reads += 1
         return res
 
-    def get_progress(self) -> float:
-        """Get an approximate playback progress."""
-        return self.progress * 0.02
-
     def cleanup(self) -> None:
+        log.noise(  # type: ignore[attr-defined]
+            "Cleanup got called on the audio source:  %r", self
+        )
         self._source.cleanup()
+
+    @property
+    def frames(self) -> int:
+        """
+        Number of read frames since this source was opened.
+        This is not the total playback time.
+        """
+        return self._num_reads
+
+    @property
+    def session_progress(self) -> float:
+        """
+        Like progress but only counts frames from this session.
+        Adjusts the estimated time by playback speed.
+        """
+        return (self._num_reads * 0.02) * self._playback_speed
+
+    @property
+    def progress(self) -> float:
+        """Get an approximate playback progress time."""
+        return self._start_time + self.session_progress
 
 
 class MusicPlayer(EventEmitter, Serializable):
@@ -94,6 +122,8 @@ class MusicPlayer(EventEmitter, Serializable):
         self.state: MusicPlayerState = MusicPlayerState.STOPPED
         self.skip_state: SkipState = SkipState()
         self.karaoke_mode: bool = False
+        self.guild_or_net_unavailable: bool = False
+        self.paused_auto: bool = False
 
         self._volume = bot.config.default_volume
         self._play_lock = asyncio.Lock()
@@ -127,10 +157,6 @@ class MusicPlayer(EventEmitter, Serializable):
         """
         Event dispatched by Playlist when an entry is added to the queue.
         """
-        if self.is_stopped:
-            log.noise("calling-later, self.play from player.")  # type: ignore[attr-defined]
-            self.loop.call_later(2, self.play)
-
         self.emit(
             "entry-added",
             player=self,
@@ -147,6 +173,9 @@ class MusicPlayer(EventEmitter, Serializable):
 
     def skip(self) -> None:
         """Skip the current playing entry but just killing playback."""
+        log.noise(  # type: ignore[attr-defined]
+            "MusicPlayer.skip() is called:  %s", repr(self)
+        )
         self._kill_current_player()
 
     def stop(self) -> None:
@@ -154,6 +183,9 @@ class MusicPlayer(EventEmitter, Serializable):
         Immediately halt playback, killing current player source, setting
         state to stopped and emitting an event.
         """
+        log.noise(  # type: ignore[attr-defined]
+            "MusicPlayer.stop() is called:  %s", repr(self)
+        )
         self.state = MusicPlayerState.STOPPED
         self._kill_current_player()
 
@@ -166,6 +198,13 @@ class MusicPlayer(EventEmitter, Serializable):
         If MusicPlayer was paused but the VoiceClient player is missing,
         do something odd and set state to playing but kill the player...
         """
+        if self.guild_or_net_unavailable:
+            log.warning("Guild or network unavailable, cannot resume playback.")
+            return
+
+        log.noise(  # type: ignore[attr-defined]
+            "MusicPlayer.resume() is called:  %s", repr(self)
+        )
         if self.is_paused and self._current_player:
             self._current_player.resume()
             self.state = MusicPlayerState.PLAYING
@@ -183,6 +222,9 @@ class MusicPlayer(EventEmitter, Serializable):
         """
         Suspend player audio playback and emit an event, if the player was playing.
         """
+        log.noise(  # type: ignore[attr-defined]
+            "MusicPlayer.pause() is called:  %s", repr(self)
+        )
         if self.is_playing:
             self.state = MusicPlayerState.PAUSED
 
@@ -202,6 +244,9 @@ class MusicPlayer(EventEmitter, Serializable):
         Set the state of the bot to Dead, clear all events and playlists,
         then kill the current VoiceClient source player.
         """
+        log.noise(  # type: ignore[attr-defined]
+            "MusicPlayer.kill() is called:  %s", repr(self)
+        )
         self.state = MusicPlayerState.DEAD
         self.playlist.clear()
         self._events.clear()
@@ -217,6 +262,13 @@ class MusicPlayer(EventEmitter, Serializable):
 
         :param: error:  An exception, if any, raised by playback.
         """
+        # Ensure the stderr stream reader for ffmpeg is exited.
+        if (
+            isinstance(self._stderr_future, asyncio.Future)
+            and not self._stderr_future.done()
+        ):
+            self._stderr_future.set_result(True)
+
         entry = self._current_entry
         if entry is None:
             log.debug("Playback finished, but _current_entry is None.")
@@ -227,6 +279,7 @@ class MusicPlayer(EventEmitter, Serializable):
         elif self.loopqueue:
             self.playlist.entries.append(entry)
 
+        # TODO: investigate if this is cruft code or not.
         if self._current_player:
             if hasattr(self._current_player, "after"):
                 self._current_player.after = None
@@ -234,12 +287,14 @@ class MusicPlayer(EventEmitter, Serializable):
 
         self._current_entry = None
         self._source = None
+        self.stop()
 
+        # if an error was set, report it and return...
         if error:
-            self.stop()
             self.emit("error", player=self, entry=entry, ex=error)
             return
 
+        # if a exception is found in the ffmpeg stderr stream, report it and return...
         if (
             isinstance(self._stderr_future, asyncio.Future)
             and self._stderr_future.done()
@@ -247,15 +302,18 @@ class MusicPlayer(EventEmitter, Serializable):
         ):
             # I'm not sure that this would ever not be done if it gets to this point
             # unless ffmpeg is doing something highly questionable
-            self.stop()
             self.emit(
                 "error", player=self, entry=entry, ex=self._stderr_future.exception()
             )
             return
 
+        # ensure file cleanup is handled if nothing was wrong with playback.
         if not self.bot.config.save_videos and entry:
-            self.loop.create_task(self._handle_file_cleanup(entry))
+            self.bot.create_task(
+                self._handle_file_cleanup(entry), name="MB_CacheCleanup"
+            )
 
+        # finally, tell the rest of MusicBot that playback is done.
         self.emit("finished-playing", player=self, entry=entry)
 
     def _kill_current_player(self) -> bool:
@@ -286,26 +344,51 @@ class MusicPlayer(EventEmitter, Serializable):
         :param: _continue:  Force a player that is not dead or stopped to
             start a new playback source anyway.
         """
-        self.loop.create_task(self._play(_continue=_continue))
+        log.noise(  # type: ignore[attr-defined]
+            "MusicPlayer.play() is called:  %s", repr(self)
+        )
+        self.bot.create_task(self._play(_continue=_continue), name="MB_Play")
 
     async def _play(self, _continue: bool = False) -> None:
         """
         Plays the next entry from the playlist, or resumes playback of the current entry if paused.
         """
+        if self.is_dead:
+            log.voicedebug(  # type: ignore[attr-defined]
+                "MusicPlayer is dead, cannot play."
+            )
+            return
+
+        if self.guild_or_net_unavailable:
+            log.warning("Guild or network unavailable, cannot start playback.")
+            return
+
         if self.is_paused and self._current_player:
+            log.voicedebug(  # type: ignore[attr-defined]
+                "MusicPlayer was previously paused, resuming current player."
+            )
             return self.resume()
 
-        if self.is_dead:
+        if self._play_lock.locked():
+            log.voicedebug(  # type: ignore[attr-defined]
+                "MusicPlayer already locked for playback, this call is ignored."
+            )
             return
 
         async with self._play_lock:
             if self.is_stopped or _continue:
+                # Get the entry before we try to ready it, so it can be passed to error callbacks.
+                entry_up_next = self.playlist.peek()
                 try:
                     entry = await self.playlist.get_next_entry()
-                except IndexError:
-                    log.warning("Failed to get entry, retrying", exc_info=True)
-                    self.loop.call_later(0.1, self.play)
-                    return
+                except IndexError as e:
+                    log.warning("Failed to get next entry.", exc_info=e)
+                    self.emit("error", player=self, entry=entry_up_next, ex=e)
+                    entry = None
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    log.warning("Failed to process entry for playback.", exc_info=e)
+                    self.emit("error", player=self, entry=entry_up_next, ex=e)
+                    entry = None
 
                 # If nothing left to play, transition to the stopped state.
                 if not entry:
@@ -317,8 +400,11 @@ class MusicPlayer(EventEmitter, Serializable):
 
                 boptions = "-nostdin"
                 # aoptions = "-vn -b:a 192k"
-                if isinstance(entry, URLPlaylistEntry):
+                if isinstance(entry, (URLPlaylistEntry, LocalFilePlaylistEntry)):
                     aoptions = entry.aoptions
+                    # check for before options, currently just -ss here.
+                    if entry.boptions:
+                        boptions += f" {entry.boptions}"
                 else:
                     aoptions = "-vn"
 
@@ -340,10 +426,12 @@ class MusicPlayer(EventEmitter, Serializable):
                             stderr=stderr_io,
                         ),
                         self.volume,
-                    )
+                    ),
+                    start_time=entry.start_time,
+                    playback_speed=entry.playback_speed,
                 )
-                log.debug(
-                    "Playing %s using %s", repr(self._source), repr(self.voice_client)
+                log.voicedebug(  # type: ignore[attr-defined]
+                    "Playing %r using %r", self._source, self.voice_client
                 )
                 self.voice_client.play(self._source, after=self._playback_finished)
 
@@ -358,7 +446,7 @@ class MusicPlayer(EventEmitter, Serializable):
                 stderr_thread = Thread(
                     target=filter_stderr,
                     args=(stderr_io, self._stderr_future),
-                    name="stderr reader",
+                    name="MB_FFmpegStdErrReader",
                 )
 
                 stderr_thread.start()
@@ -410,22 +498,11 @@ class MusicPlayer(EventEmitter, Serializable):
                     )
 
     def __json__(self) -> Dict[str, Any]:
-        progress_frames = None
-        if (
-            self._current_player
-            and self._current_player._player  # pylint: disable=protected-access
-        ):
-            if self.progress is not None:
-                progress_frames = (
-                    self._current_player._player.loops  # pylint: disable=protected-access
-                )
-
         return self._enclose_json(
             {
                 "current_entry": {
                     "entry": self.current_entry,
-                    "progress": self.progress,
-                    "progress_frames": progress_frames,
+                    "progress": self.progress if self.progress > 1 else None,
                 },
                 "entries": self.playlist,
             }
@@ -452,12 +529,13 @@ class MusicPlayer(EventEmitter, Serializable):
 
         current_entry_data = raw_json["current_entry"]
         if current_entry_data["entry"]:
+            entry = current_entry_data["entry"]
+            progress = current_entry_data["progress"]
+            if progress and isinstance(
+                entry, (URLPlaylistEntry, LocalFilePlaylistEntry)
+            ):
+                entry.set_start_time(progress)
             player.playlist.entries.appendleft(current_entry_data["entry"])
-            # TODO: progress stuff
-            # how do I even do this
-            # this would have to be in the entry class right?
-            # some sort of progress indicator to skip ahead with ffmpeg (however that works, reading and ignoring frames?)
-
         return player
 
     @classmethod
@@ -517,11 +595,17 @@ class MusicPlayer(EventEmitter, Serializable):
         Return a progress value for the media playback.
         """
         if self._source:
-            return self._source.get_progress()
-            # TODO: Properly implement this
-            #       Correct calculation should be bytes_read/192k
-            #       192k AKA sampleRate * (bitDepth / 8) * channelCount
-            #       Change frame_count to bytes_read in the PatchedBuff
+            return self._source.progress
+        return 0
+
+    @property
+    def session_progress(self) -> float:
+        """
+        Return the estimated playback time of the current playback source.
+        Like progress, but does not include any start-time if one was used.
+        """
+        if self._source:
+            return self._source.session_progress
         return 0
 
 
@@ -535,8 +619,7 @@ def filter_stderr(stderr: io.BytesIO, future: AsyncFuture) -> None:
     set the future with a successful result.
     """
     last_ex = None
-
-    while True:
+    while not future.done():
         data = stderr.readline()
         if data:
             log.ffmpeg(  # type: ignore[attr-defined]
@@ -553,18 +636,21 @@ def filter_stderr(stderr: io.BytesIO, future: AsyncFuture) -> None:
                     "Error from ffmpeg: %s", str(e).strip()
                 )
                 last_ex = e
+                if not future.done():
+                    future.set_exception(e)
 
             except FFmpegWarning as e:
                 log.ffmpeg(  # type: ignore[attr-defined]
                     "Warning from ffmpeg:  %s", str(e).strip()
                 )
         else:
-            break
+            time.sleep(0.5)
 
-    if last_ex:
-        future.set_exception(last_ex)
-    else:
-        future.set_result(True)
+    if not future.done():
+        if last_ex:
+            future.set_exception(last_ex)
+        else:
+            future.set_result(True)
 
 
 def check_stderr(data: bytes) -> bool:

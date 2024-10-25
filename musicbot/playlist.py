@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import logging
 from collections import deque
@@ -15,29 +16,35 @@ from typing import (
     Union,
 )
 
+import discord
+
+from .constants import DEFAULT_PRE_DOWNLOAD_DELAY
 from .constructs import Serializable
-from .entry import StreamPlaylistEntry, URLPlaylistEntry
+from .entry import LocalFilePlaylistEntry, StreamPlaylistEntry, URLPlaylistEntry
 from .exceptions import ExtractionError, InvalidDataError, WrongEntryTypeError
 from .lib.event_emitter import EventEmitter
 
 if TYPE_CHECKING:
-    import asyncio
-
-    import discord
-
     from .bot import MusicBot
     from .downloader import YtdlpResponseDict
     from .player import MusicPlayer
 
 # type aliases
-EntryTypes = Union[URLPlaylistEntry, StreamPlaylistEntry]
+EntryTypes = Union[URLPlaylistEntry, StreamPlaylistEntry, LocalFilePlaylistEntry]
+
+GuildMessageableChannels = Union[
+    discord.VoiceChannel,
+    discord.StageChannel,
+    discord.Thread,
+    discord.TextChannel,
+]
 
 log = logging.getLogger(__name__)
 
 
 class Playlist(EventEmitter, Serializable):
     """
-    A playlist that manages the list of songs that will be played.
+    A playlist that manages the queue of songs that will be played.
     """
 
     def __init__(self, bot: "MusicBot") -> None:
@@ -47,7 +54,7 @@ class Playlist(EventEmitter, Serializable):
         """
         super().__init__()
         self.bot: "MusicBot" = bot
-        self.loop: "asyncio.AbstractEventLoop" = bot.loop
+        self.loop: asyncio.AbstractEventLoop = bot.loop
         self.entries: Deque[EntryTypes] = deque()
 
     def __iter__(self) -> Iterator[EntryTypes]:
@@ -91,10 +98,10 @@ class Playlist(EventEmitter, Serializable):
         self,
         info: "YtdlpResponseDict",
         *,
+        author: Optional["discord.Member"] = None,
+        channel: Optional[GuildMessageableChannels] = None,
         head: bool = False,
         defer_serialize: bool = False,
-        is_autoplaylist: bool = False,
-        **meta: Any,
     ) -> Tuple[StreamPlaylistEntry, int]:
         """
         Use the given `info` to create a StreamPlaylistEntry and add it
@@ -106,7 +113,6 @@ class Playlist(EventEmitter, Serializable):
         :param: head:  Toggle adding to the front of the queue.
         :param: defer_serialize:  Signal to defer serialization steps.
             Useful if many entries are added at once
-        :param: meta:  Any additional info to add to the entry.
 
         :returns:  A tuple with the entry object, and its position in the queue.
         """
@@ -117,8 +123,8 @@ class Playlist(EventEmitter, Serializable):
         entry = StreamPlaylistEntry(
             self,
             info,
-            from_apl=is_autoplaylist,
-            **meta,
+            author=author,
+            channel=channel,
         )
         self._add_entry(entry, head=head, defer_serialize=defer_serialize)
         return entry, len(self.entries)
@@ -127,10 +133,10 @@ class Playlist(EventEmitter, Serializable):
         self,
         info: "YtdlpResponseDict",
         *,
+        author: Optional["discord.Member"] = None,
+        channel: Optional[GuildMessageableChannels] = None,
         head: bool = False,
         defer_serialize: bool = False,
-        is_autoplaylist: bool = False,
-        **meta: Any,
     ) -> Tuple[EntryTypes, int]:
         """
         Checks given `info` to determine if media is streaming or has a
@@ -141,7 +147,6 @@ class Playlist(EventEmitter, Serializable):
         :param info: The extraction data of the song to add to the playlist.
         :param head: Add to front of queue instead of the end.
         :param defer_serialize:  Signal that serialization steps should be deferred.
-        :param meta: Any additional metadata to add to the playlist entry.
 
         :returns: the entry & it's position in the queue.
 
@@ -160,13 +165,29 @@ class Playlist(EventEmitter, Serializable):
                 info.webpage_url or info.url,
             )
 
+        # check if this is a local file entry.
+        if info.ytdl_type == "local":
+            return await self.add_local_file_entry(
+                info,
+                author=author,
+                channel=channel,
+                head=head,
+                defer_serialize=defer_serialize,
+            )
+
         # check if this is a stream, just in case.
         if info.is_stream:
             log.debug("Entry info appears to be a stream, adding stream entry...")
-            return await self.add_stream_from_info(info, head=head, **meta)
+            return await self.add_stream_from_info(
+                info,
+                author=author,
+                channel=channel,
+                head=head,
+                defer_serialize=defer_serialize,
+            )
 
         # TODO: Extract this to its own function
-        if info.extractor in ["generic", "Dropbox"]:
+        if any(info.extractor.startswith(x) for x in ["generic", "Dropbox"]):
             content_type = info.http_header("content-type", None)
 
             if content_type:
@@ -183,7 +204,7 @@ class Playlist(EventEmitter, Serializable):
                     log.warning(
                         "Got text/html for content-type, this might be a stream."
                     )
-                    return await self.add_stream_from_info(info, head=head, **meta)
+                    return await self.add_stream_from_info(info, head=head)
                     # TODO: Check for shoutcast/icecast
 
                 elif not content_type.startswith(("audio/", "video/")):
@@ -194,9 +215,28 @@ class Playlist(EventEmitter, Serializable):
                     )
 
         log.noise(  # type: ignore[attr-defined]
-            f"Adding URLPlaylistEntry for: {info.get('__input_subject')}"
+            f"Adding URLPlaylistEntry for: {info.input_subject}"
         )
-        entry = URLPlaylistEntry(self, info, from_apl=is_autoplaylist, **meta)
+        entry = URLPlaylistEntry(self, info, author=author, channel=channel)
+        self._add_entry(entry, head=head, defer_serialize=defer_serialize)
+        return entry, (1 if head else len(self.entries))
+
+    async def add_local_file_entry(
+        self,
+        info: "YtdlpResponseDict",
+        *,
+        author: Optional["discord.Member"] = None,
+        channel: Optional[GuildMessageableChannels] = None,
+        head: bool = False,
+        defer_serialize: bool = False,
+    ) -> Tuple[LocalFilePlaylistEntry, int]:
+        """
+        Adds a local media file entry to the playlist.
+        """
+        log.noise(  # type: ignore[attr-defined]
+            f"Adding LocalFilePlaylistEntry for: {info.input_subject}"
+        )
+        entry = LocalFilePlaylistEntry(self, info, author=author, channel=channel)
         self._add_entry(entry, head=head, defer_serialize=defer_serialize)
         return entry, (1 if head else len(self.entries))
 
@@ -205,8 +245,8 @@ class Playlist(EventEmitter, Serializable):
         info: "YtdlpResponseDict",
         head: bool,
         ignore_video_id: str = "",
-        is_autoplaylist: bool = False,
-        **meta: Any,
+        author: Optional["discord.Member"] = None,
+        channel: Optional[GuildMessageableChannels] = None,
     ) -> Tuple[List[EntryTypes], int]:
         """
         Validates the songs from `info` and queues them to be played.
@@ -216,14 +256,12 @@ class Playlist(EventEmitter, Serializable):
 
         :param: info:  YoutubeDL extraction data containing multiple entries.
         :param: head:  Toggle adding the entries to the front of the queue.
-        :param: meta:  Any additional metadata to add to the playlist entries.
         """
         position = 1 if head else len(self.entries) + 1
         entry_list = []
         baditems = 0
         entries = info.get_entries_objects()
         author_perms = None
-        author = meta.get("author", None)
         defer_serialize = True
 
         if author:
@@ -297,8 +335,8 @@ class Playlist(EventEmitter, Serializable):
                     item,
                     head=head,
                     defer_serialize=defer_serialize,
-                    is_autoplaylist=is_autoplaylist,
-                    **meta,
+                    author=author,
+                    channel=channel,
                 )
                 entry_list.append(entry)
             except (WrongEntryTypeError, ExtractionError):
@@ -320,31 +358,47 @@ class Playlist(EventEmitter, Serializable):
         Get the next song in the queue that was added by the given `author`
         """
         for entry in self.entries:
-            if entry.meta.get("author", None) == author:
+            if entry.author == author:
                 return entry
 
         return None
 
     def reorder_for_round_robin(self) -> None:
         """
-        Reorders the queue for round-robin
+        Reorders the current queue for round-robin, one song per author.
+        Entries added by the auto playlist will be removed.
         """
         new_queue: Deque[EntryTypes] = deque()
-        all_authors: List["discord.User"] = []
+        all_authors: List["discord.abc.User"] = []
 
+        # Make a list of unique authors from the current queue.
         for entry in self.entries:
-            author = entry.meta.get("author", None)
-            if author and author not in all_authors:
-                all_authors.append(author)
+            if entry.author and entry.author not in all_authors:
+                all_authors.append(entry.author)
 
+        # If all queue entries have no author, do nothing.
+        if len(all_authors) == 0:
+            return
+
+        # Loop over the queue and organize it by requesting author.
+        # This will remove entries which are added by the auto-playlist.
         request_counter = 0
         song: Optional[EntryTypes] = None
         while self.entries:
-            if request_counter == len(all_authors):
+            log.everything(  # type: ignore[attr-defined]
+                "Reorder looping over entries."
+            )
+            # Do not continue if we have no more authors.
+            if len(all_authors) == 0:
+                break
+
+            # Reset the requesting author if needed.
+            if request_counter >= len(all_authors):
                 request_counter = 0
 
             song = self.get_next_song_from_author(all_authors[request_counter])
 
+            # Remove the authors with no further songs.
             if song is None:
                 all_authors.pop(request_counter)
                 continue
@@ -377,41 +431,7 @@ class Playlist(EventEmitter, Serializable):
             "entry-added", playlist=self, entry=entry, defer_serialize=defer_serialize
         )
 
-        if self.peek() is entry:
-            entry.get_ready_future()
-
-    async def _try_get_entry_future(
-        self, entry: EntryTypes, predownload: bool = False
-    ) -> Any:
-        """gracefully try to get the entry ready future, or start pre-downloading one."""
-        moving_on = " Moving to the next entry..."
-        if predownload:
-            moving_on = ""
-
-        try:
-            if predownload:
-                entry.get_ready_future()
-            else:
-                return await entry.get_ready_future()
-
-        except ExtractionError as e:
-            log.warning("Extraction failed for a playlist entry.%s", moving_on)
-            self.emit("entry-failed", entry=entry, error=e)
-            if not predownload:
-                return await self.get_next_entry()
-
-        except AttributeError as e:
-            log.warning(
-                "Deserialize probably failed for a playlist entry.%s",
-                moving_on,
-            )
-            self.emit("entry-failed", entry=entry, error=e)
-            if not predownload:
-                return await self.get_next_entry()
-
-        return None
-
-    async def get_next_entry(self, predownload_next: bool = True) -> Any:
+    async def get_next_entry(self) -> Any:
         """
         A coroutine which will return the next song or None if no songs left to play.
 
@@ -422,13 +442,34 @@ class Playlist(EventEmitter, Serializable):
             return None
 
         entry = self.entries.popleft()
+        self.bot.create_task(
+            self._pre_download_entry_after_next(entry),
+            name="MB_PreDownloadNextUp",
+        )
 
-        if predownload_next:
-            next_entry = self.peek()
-            if next_entry:
-                await self._try_get_entry_future(next_entry, predownload_next)
+        return await entry.get_ready_future()
 
-        return await self._try_get_entry_future(entry)
+    async def _pre_download_entry_after_next(self, last_entry: EntryTypes) -> None:
+        """
+        Enforces a delay before doing pre-download of the "next" song.
+        Should only be called from get_next_entry() after pop.
+        """
+        if not self.bot.config.pre_download_next_song:
+            return
+
+        if not self.entries:
+            return
+
+        # get the next entry to pre-download before we wait.
+        next_entry = self.peek()
+
+        await asyncio.sleep(DEFAULT_PRE_DOWNLOAD_DELAY)
+
+        if next_entry and next_entry != last_entry:
+            log.everything(  # type: ignore[attr-defined]
+                "Pre-downloading next track:  %r", next_entry
+            )
+            next_entry.get_ready_future()
 
     def peek(self) -> Optional[EntryTypes]:
         """
@@ -460,16 +501,18 @@ class Playlist(EventEmitter, Serializable):
 
         # When the player plays a song, it eats the first playlist item, so we just have to add the time back
         if not player.is_stopped and player.current_entry:
-            if player.current_entry.duration is None:  # duration can be 0
+            if player.current_entry.duration is None:
                 raise InvalidDataError("no duration data in current entry")
 
-            estimated_time += player.current_entry.duration - player.progress
+            estimated_time += (
+                player.current_entry.duration_td.total_seconds() - player.progress
+            )
 
         return datetime.timedelta(seconds=estimated_time)
 
     def count_for_user(self, user: "discord.abc.User") -> int:
         """Get a sum of entries added to the playlist by the given `user`"""
-        return sum(1 for e in self.entries if e.meta.get("author", None) == user)
+        return sum(1 for e in self.entries if e.author == user)
 
     def __json__(self) -> Dict[str, Any]:
         return self._enclose_json({"entries": list(self.entries)})

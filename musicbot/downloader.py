@@ -1,7 +1,9 @@
+import asyncio
 import copy
 import datetime
 import functools
 import hashlib
+import importlib
 import logging
 import os
 import pathlib
@@ -20,8 +22,9 @@ from yt_dlp.utils import DownloadError  # type: ignore[import-untyped]
 from yt_dlp.utils import UnsupportedError
 
 from .constants import DEFAULT_MAX_INFO_DL_THREADS, DEFAULT_MAX_INFO_REQUEST_TIMEOUT
-from .exceptions import ExtractionError
+from .exceptions import ExtractionError, MusicbotException
 from .spotify import Spotify
+from .ytdlp_oauth2_plugin import enable_ytdlp_oauth2_plugin
 
 if TYPE_CHECKING:
     from multidict import CIMultiDictProxy
@@ -79,15 +82,65 @@ class Downloader:
         self.bot: "MusicBot" = bot
         self.download_folder: pathlib.Path = bot.config.audio_cache_path
         # NOTE: this executor may not be good for long-running downloads...
-        self.thread_pool = ThreadPoolExecutor(max_workers=DEFAULT_MAX_INFO_DL_THREADS)
+        self.thread_pool = ThreadPoolExecutor(
+            max_workers=DEFAULT_MAX_INFO_DL_THREADS,
+            thread_name_prefix="MB_Downloader",
+        )
 
         # force ytdlp and HEAD requests to use the same UA string.
-        self.http_req_headers = {
-            "User-Agent": youtube_dl.utils.networking.random_user_agent()
-        }
+        # If the constant is set, use that, otherwise use dynamic selection.
+        if bot.config.ytdlp_user_agent:
+            ua = bot.config.ytdlp_user_agent
+            log.warning("Forcing YTDLP to use User Agent:  %s", ua)
+        else:
+            ua = youtube_dl.utils.networking.random_user_agent()
+        self.http_req_headers = {"User-Agent": ua}
         # Copy immutable dict and use the mutable copy for everything else.
         ytdl_format_options = ytdl_format_options_immutable.copy()
         ytdl_format_options["http_headers"] = self.http_req_headers
+
+        # check if we should apply a cookies file to ytdlp.
+        if bot.config.cookies_path.is_file():
+            log.info(
+                "MusicBot will use cookies for yt-dlp from:  %s",
+                bot.config.cookies_path,
+            )
+            ytdl_format_options["cookiefile"] = bot.config.cookies_path
+
+        if bot.config.ytdlp_proxy:
+            log.info("Yt-dlp will use your configured proxy server.")
+            ytdl_format_options["proxy"] = bot.config.ytdlp_proxy
+
+        if bot.config.ytdlp_use_oauth2:
+            # set the login info so oauth2 is prompted.
+            ytdl_format_options["username"] = "oauth2"
+            ytdl_format_options["password"] = ""
+            # ytdl_format_options["extractor_args"] = {
+            #    "youtubetab": {"skip": ["authcheck"]}
+            # }
+
+            # check if the original plugin is installed, and use it instead of ours.
+            # It's worth doing this because our version might fail to work,
+            # even if the original causes infinite loop hangs while auth is pending...
+            try:
+                oauth_spec = importlib.util.find_spec(
+                    "yt_dlp_plugins.extractor.youtubeoauth"
+                )
+            except ModuleNotFoundError:
+                oauth_spec = None
+
+            if oauth_spec is not None:
+                log.warning(
+                    "Original OAuth2 plugin is installed and will be used instead.\n"
+                    "This may cause MusicBot to not close completely, or hang pending authorization!\n"
+                    "To close MusicBot, you must manually Kill the MusicBot process!\n"
+                    "Yt-dlp is being set to show warnings and other log messages, to show the Auth code.\n"
+                    "Uninstall the yt-dlp-youtube-oauth2 package to use integrated OAuth2 features instead."
+                )
+                ytdl_format_options["quiet"] = False
+                ytdl_format_options["no_warnings"] = False
+            else:
+                enable_ytdlp_oauth2_plugin(self.bot.config)
 
         if self.download_folder:
             # print("setting template to " + os.path.join(download_folder, otmpl))
@@ -105,6 +158,43 @@ class Downloader:
     def ytdl(self) -> youtube_dl.YoutubeDL:
         """Get the Safe (errors ignored) instance of YoutubeDL."""
         return self.safe_ytdl
+
+    @property
+    def cookies_enabled(self) -> bool:
+        """
+        Get status of cookiefile option in ytdlp objects.
+        """
+        return all(
+            "cookiefile" in ytdl.params for ytdl in [self.safe_ytdl, self.unsafe_ytdl]
+        )
+
+    def enable_ytdl_cookies(self) -> None:
+        """
+        Set the cookiefile option on the ytdl objects.
+        """
+        self.safe_ytdl.params["cookiefile"] = self.bot.config.cookies_path
+        self.unsafe_ytdl.params["cookiefile"] = self.bot.config.cookies_path
+
+    def disable_ytdl_cookies(self) -> None:
+        """
+        Remove the cookiefile option on the ytdl objects.
+        """
+        del self.safe_ytdl.params["cookiefile"]
+        del self.unsafe_ytdl.params["cookiefile"]
+
+    def randomize_user_agent_string(self) -> None:
+        """
+        Uses ytdlp utils functions to re-randomize UA strings in YoutubeDL
+        objects and header check requests.
+        """
+        # ignore this call if static UA is configured.
+        if not self.bot.config.ytdlp_user_agent:
+            return
+
+        new_ua = youtube_dl.utils.networking.random_user_agent()
+        self.unsafe_ytdl.params["http_headers"]["User-Agent"] = new_ua
+        self.safe_ytdl.params["http_headers"]["User-Agent"] = new_ua
+        self.http_req_headers["User-Agent"] = new_ua
 
     def get_url_or_none(self, url: str) -> Optional[str]:
         """
@@ -149,6 +239,9 @@ class Downloader:
                         headers[new_key] = values
                     else:
                         headers[new_key] = values.pop()
+            except asyncio.exceptions.TimeoutError:
+                log.warning("Checking media headers failed due to timeout.")
+                headers = {"X-HEAD-REQ-FAILED": "1"}
             except (ExtractionError, OSError, aiohttp.ClientError):
                 log.warning("Failed HEAD request for:  %s", test_url)
                 log.exception("HEAD Request exception: ")
@@ -188,6 +281,7 @@ class Downloader:
             timeout=req_timeout,
             allow_redirects=allow_redirects,
             headers=req_headers,
+            proxy=self.bot.config.ytdlp_proxy,
         ) as response:
             return response.headers
 
@@ -239,6 +333,9 @@ class Downloader:
 
         :returns: YtdlpResponseDict object containing sanitized extraction data.
 
+        :raises: musicbot.exceptions.MusicbotError
+            if event loop is closed and cannot be used for extraction.
+
         :raises: musicbot.exceptions.ExtractionError
             for errors in MusicBot's internal filtering and pre-processing of extraction queries.
 
@@ -251,6 +348,13 @@ class Downloader:
         :raises: yt_dlp.networking.exceptions.RequestError
             as a base exception for any networking errors raised by yt_dlp.
         """
+        # handle local media playback without ever touching ytdl and friends.
+        # We do this here so auto playlist features can take advantage of this as well.
+        if self.bot.config.enable_local_media and song_subject.lower().startswith(
+            "file://"
+        ):
+            return self._return_local_media(song_subject)
+
         # Hash the URL for use as a unique ID in file paths.
         # but ignore services with multiple URLs for the same media.
         song_subject_hash = ""
@@ -284,7 +388,12 @@ class Downloader:
         data["__header_data"] = headers or None
         data["__expected_filename"] = self.ytdl.prepare_filename(data)
 
-        # log data only for debug and higher verbosity levels.
+        # ensure the UA is randomized with each new request if not set static.
+        self.randomize_user_agent_string()
+
+        """
+        # disabled since it is only needed for working on extractions.
+        # logs data only for debug and higher verbosity levels.
         self._sanitize_and_log(
             data,
             # these fields are here because they are often very lengthy.
@@ -292,6 +401,7 @@ class Downloader:
             # as needed, but maybe not commit these changes
             redact_fields=["automatic_captions", "formats", "heatmap"],
         )
+        """
         return YtdlpResponseDict(data)
 
     async def _filtered_extract_info(
@@ -308,6 +418,9 @@ class Downloader:
         :returns: Dictionary of data returned from extract_info() or other
             integration. Serialization ready.
 
+        :raises: musicbot.exceptions.MusicbotError
+            if event loop is closed and cannot be used for extraction.
+
         :raises: musicbot.exceptions.ExtractionError
             for errors in MusicBot's internal filtering and pre-processing of extraction queries.
 
@@ -322,6 +435,13 @@ class Downloader:
         """
         log.noise(f"Called extract_info with:  '{song_subject}', {args}, {kwargs}")  # type: ignore[attr-defined]
         as_stream_url = kwargs.pop("as_stream", False)
+
+        # check if loop is closed and exit.
+        if (self.bot.loop and self.bot.loop.is_closed()) or not self.bot.loop:
+            log.warning(
+                "Cannot run extraction, loop is closed. (This is normal on shutdowns.)"
+            )
+            raise MusicbotException("Cannot continue extraction, event loop is closed.")
 
         # handle extracting spotify links before ytdl get a hold of them.
         if (
@@ -405,7 +525,7 @@ class Downloader:
         # This prevents single-entry searches being processed like a playlist later.
         # However we must preserve the list behavior when using cmd_search.
         if (
-            data.get("extractor", "") == "youtube:search"
+            data.get("extractor", "").startswith("youtube:search")
             and len(data.get("entries", [])) == 1
             and isinstance(data.get("entries", None), list)
             and data.get("playlist_count", 0) == 1
@@ -431,6 +551,35 @@ class Downloader:
         return await self.bot.loop.run_in_executor(
             self.thread_pool,
             functools.partial(self.safe_ytdl.extract_info, *args, **kwargs),
+        )
+
+    def _return_local_media(self, song_subject: str) -> "YtdlpResponseDict":
+        """Verifies local media files and returns suitable data for local entries."""
+        filename = song_subject[7:]
+        media_path = self.bot.config.media_file_dir.resolve()
+        unclean_path = media_path.joinpath(filename).resolve()
+        if os.path.commonprefix([media_path, unclean_path]) == str(media_path):
+            local_file_path = unclean_path
+        else:
+            local_file_path = media_path.joinpath(pathlib.Path(filename).name)
+        corrected_fie_uri = str(local_file_path).replace(str(media_path), "file://")
+
+        if not local_file_path.is_file():
+            raise MusicbotException("The local media file could not be found.")
+
+        return YtdlpResponseDict(
+            {
+                "__input_subject": song_subject,
+                "__header_data": None,
+                "__expected_filename": local_file_path,
+                "_type": "local",
+                # "original_url": song_subject,
+                "extractor": "local:musicbot",
+                "extractor_key": "LocalMediaMusicBot",
+                # Getting a "good" title for the track will take some serious consideration...
+                "title": local_file_path.name,
+                "url": corrected_fie_uri,
+            }
         )
 
 
@@ -520,6 +669,14 @@ class YtdlpResponseDict(YUserDict):
         return default
 
     @property
+    def input_subject(self) -> str:
+        """Get the input subject used to create this data."""
+        subject = self.data.get("__input_subject", "")
+        if isinstance(subject, str):
+            return subject
+        return ""
+
+    @property
     def expected_filename(self) -> Optional[str]:
         """get expected filename for this info data, or None if not available"""
         fn = self.data.get("__expected_filename", None)
@@ -571,7 +728,7 @@ class YtdlpResponseDict(YUserDict):
                 return turl
 
         # if all else fails, try to make a URL on our own.
-        if self.extractor == "youtube":
+        if self.extractor.startswith("youtube"):
             if self.video_id:
                 return f"https://i.ytimg.com/vi/{self.video_id}/maxresdefault.jpg"
 
@@ -718,7 +875,7 @@ class YtdlpResponseDict(YUserDict):
             return True
 
         # Warning: questionable methods from here on.
-        if self.extractor == "generic":
+        if self.extractor.startswith("generic"):
             # check against known streaming service headers.
             if self.http_header("ICY-NAME") or self.http_header("ICY-URL"):
                 return True

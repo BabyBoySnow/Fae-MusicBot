@@ -37,7 +37,6 @@ class InvalidDataError(MusicbotException):
 
 
 # The no processing entry type failed and an entry was a playlist/vice versa
-# TODO: Add typing options instead of is_playlist
 class WrongEntryTypeError(ExtractionError):
     def __init__(self, message: str, is_playlist: bool, use_url: str) -> None:
         super().__init__(message)
@@ -56,7 +55,7 @@ class FFmpegWarning(MusicbotException):
 
 
 # Some issue retrieving something from Spotify's API or processing it.
-class SpotifyError(MusicbotException):
+class SpotifyError(ExtractionError):
     pass
 
 
@@ -124,7 +123,9 @@ class HelpfulError(MusicbotException):
             pretext = pretext.rstrip() + "\n"
             width = shutil.get_terminal_size().columns
 
-        lines = textwrap.wrap(text, width=width - 5)
+        lines = []
+        for line in text.split("\n"):
+            lines += textwrap.wrap(line, width=width - 5)
         lines = [
             ("    " + line).rstrip().ljust(width - 1).rstrip() + "\n" for line in lines
         ]
@@ -166,4 +167,5 @@ class RestartSignal(Signal):
 
 # signal to end the bot "gracefully"
 class TerminateSignal(Signal):
-    exit_code: int = 0
+    def __init__(self, exit_code: int = 0):
+        self.exit_code: int = exit_code
