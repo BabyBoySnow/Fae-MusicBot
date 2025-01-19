@@ -39,6 +39,33 @@ else:
 
 log = logging.getLogger(__name__)
 
+
+class YtdlpLogHook:
+    def debug(self, msg: Any) -> None:
+        """Debug or info level log from yt_dlp"""
+        if msg.startswith("[debug] "):
+            ld = log.debug
+            ld(f"[YTDLP] {msg}")  # pylint: disable=logging-fstring-interpolation
+        else:
+            li = log.info
+            li(f"[YTDLP] {msg}")  # pylint: disable=logging-fstring-interpolation
+
+    def info(self, msg: Any) -> None:
+        """Info level log from yt_dlp"""
+        li = log.info
+        li(f"[YTDLP] {msg}")  # pylint: disable=logging-fstring-interpolation
+
+    def warning(self, msg: Any) -> None:
+        """Warning level log from yt_dlp"""
+        lw = log.warning
+        lw(f"[YTDLP] {msg}")  # pylint: disable=logging-fstring-interpolation
+
+    def error(self, msg: Any) -> None:
+        """Error level log from yt_dlp"""
+        le = log.error
+        le(f"[YTDLP] {msg}")  # pylint: disable=logging-fstring-interpolation
+
+
 # Immutable dict is needed, because something is modifying the 'outtmpl' value. I suspect it being ytdl, but I'm not sure.
 ytdl_format_options_immutable = MappingProxyType(
     {
@@ -57,6 +84,7 @@ ytdl_format_options_immutable = MappingProxyType(
         "source_address": "0.0.0.0",
         "usenetrc": True,
         "no_color": True,
+        "retries": 1,
     }
 )
 
@@ -79,7 +107,7 @@ class Downloader:
         Set up YoutubeDL and related config as well as a thread pool executor
         to run concurrent extractions.
         """
-        self.bot: "MusicBot" = bot
+        self.bot: MusicBot = bot
         self.download_folder: pathlib.Path = bot.config.audio_cache_path
         # NOTE: this executor may not be good for long-running downloads...
         self.thread_pool = ThreadPoolExecutor(
@@ -99,6 +127,14 @@ class Downloader:
         ytdl_format_options = ytdl_format_options_immutable.copy()
         ytdl_format_options["http_headers"] = self.http_req_headers
 
+        # enable verbose ytdlp logs if debug mode is enabled.
+        if bot.config.debug_mode:
+            ytdl_format_options["no_warnings"] = False
+            ytdl_format_options["logger"] = YtdlpLogHook()
+            # "progress_hooks": [YtdlpLogHook.progress]
+            if bot.config.debug_level <= logging.NOISY:  # type: ignore[attr-defined]
+                ytdl_format_options["verbose"] = True
+
         # check if we should apply a cookies file to ytdlp.
         if bot.config.cookies_path.is_file():
             log.info(
@@ -113,7 +149,7 @@ class Downloader:
 
         if bot.config.ytdlp_use_oauth2:
             # set the login info so oauth2 is prompted.
-            ytdl_format_options["username"] = "oauth2"
+            ytdl_format_options["username"] = "mb_oauth2"
             ytdl_format_options["password"] = ""
             # ytdl_format_options["extractor_args"] = {
             #    "youtubetab": {"skip": ["authcheck"]}
@@ -433,7 +469,10 @@ class Downloader:
         :raises: yt_dlp.networking.exceptions.RequestError
             as a base exception for any networking errors raised by yt_dlp.
         """
-        log.noise(f"Called extract_info with:  '{song_subject}', {args}, {kwargs}")  # type: ignore[attr-defined]
+        log.noise(  # type: ignore[attr-defined]
+            "Called extract_info with:  '%(subject)s', %(args)s, %(kws)s",
+            {"subject": song_subject, "args": args, "kws": kwargs},
+        )
         as_stream_url = kwargs.pop("as_stream", False)
 
         # check if loop is closed and exit.
@@ -482,7 +521,10 @@ class Downloader:
             )
         except DownloadError as e:
             if not as_stream_url:
-                raise ExtractionError(str(e)) from e
+                raise ExtractionError(
+                    "Error in yt-dlp while downloading media data: %(raw_error)s",
+                    fmt_args={"raw_error": e},
+                ) from e
 
             log.exception("Download Error with stream URL")
             if e.exc_info[0] == UnsupportedError:
@@ -500,7 +542,10 @@ class Downloader:
                     raise ExtractionError("Cannot stream an invalid URL.") from e
 
             else:
-                raise ExtractionError(f"Invalid input: {str(e)}") from e
+                raise ExtractionError(
+                    "Error in yt-dlp while downloading stream data: %(raw_error)s",
+                    fmt_args={"raw_error": e},
+                ) from e
         except NoSupportingHandlers:
             # due to how we allow search service strings we can't just encode this by default.
             # on the other hand, this method prevents cmd_stream from taking search strings.
@@ -547,7 +592,10 @@ class Downloader:
         Uses an instance of YoutubeDL with errors explicitly ignored to
         call extract_info with all arguments passed to this function.
         """
-        log.noise(f"Called safe_extract_info with:  {args}, {kwargs}")  # type: ignore[attr-defined]
+        log.noise(  # type: ignore[attr-defined]
+            "Called safe_extract_info with:  %(args)s, %(kws)s",
+            {"args": args, "kws": kwargs},
+        )
         return await self.bot.loop.run_in_executor(
             self.thread_pool,
             functools.partial(self.safe_ytdl.extract_info, *args, **kwargs),
@@ -605,7 +653,7 @@ class YtdlpResponseDict(YUserDict):
         if not subject:
             log.warning("Missing __input_subject from YtdlpResponseDict")
 
-        entries = self.data.get("entires", [])
+        entries = self.data.get("entries", [])
         if not isinstance(entries, list):
             log.warning(
                 "Entries is not a list in YtdlpResponseDict, set process=True to avoid this."
@@ -837,7 +885,8 @@ class YtdlpResponseDict(YUserDict):
             return float(self.data.get("duration", 0))
         except (ValueError, TypeError):
             log.noise(  # type: ignore[attr-defined]
-                f"Warning, duration ValueEror/TypeError for: {self.original_url}",
+                "Warning, duration error for: %(url)s",
+                {"url": self.original_url},
                 exc_info=True,
             )
             return 0.0
