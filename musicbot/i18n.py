@@ -54,7 +54,9 @@ def _Ln(msg: str, plural: str, n: int) -> str:  # pylint: disable=invalid-name
     return msg
 
 
-def _D(msg: str, ssd: "GuildSpecificData") -> str:  # pylint: disable=invalid-name
+def _D(  # pylint: disable=invalid-name
+    msg: str, ssd: Optional["GuildSpecificData"]
+) -> str:
     """
     Marks strings for translation as part of discord domain.
     Is a shorthand for I18n.sgettext() in the discord domain.
@@ -66,7 +68,7 @@ def _D(msg: str, ssd: "GuildSpecificData") -> str:  # pylint: disable=invalid-na
 
 
 def _Dn(  # pylint: disable=invalid-name
-    msg: str, plural: str, n: int, ssd: "GuildSpecificData"
+    msg: str, plural: str, n: int, ssd: Optional["GuildSpecificData"]
 ) -> str:
     """
     Marks strings for translation as part of discord domain.
@@ -75,6 +77,14 @@ def _Dn(  # pylint: disable=invalid-name
     """
     if builtins.__dict__["_Dn"]:
         return str(builtins.__dict__["_Dn"](msg, plural, n, ssd))
+    return msg
+
+
+def _Dd(msg: str) -> str:  # pylint: disable=invalid-name
+    """
+    Marks strings for translation as part of discord domain.
+    Translation is deferred until later in runtime.
+    """
     return msg
 
 
@@ -88,7 +98,7 @@ class I18n:
     contained within the following directory and file structure:
       [localedir] / [lang_code] / LC_MESSAGES / [domain].mo
 
-    All [lang_code] portions will be in lower case.
+    All [lang_code] portions are case sensitive!
 
     If a file cannot be found with the desired or a default language, a warning
     will be issued and strings will simply not be translated.
@@ -133,11 +143,11 @@ class I18n:
 
         # selected language for logs.
         if log_lang:
-            self._log_lang = log_lang.lower()
+            self._log_lang = log_lang
 
         # selected language for discord messages.
         if msg_lang:
-            self._msg_lang = msg_lang.lower()
+            self._msg_lang = msg_lang
 
         # lang-code map to avoid the lookup overhead.
         self._discord_langs: Dict[int, Translations] = {}
@@ -154,7 +164,7 @@ class I18n:
         This will always contain at least the MusicBot default language constant.
         """
         langs = self._sys_langs.copy()
-        langs.append(DEFAULT_I18N_LANG.lower())
+        langs.append(DEFAULT_I18N_LANG)
         return langs
 
     @property
@@ -184,13 +194,13 @@ class I18n:
             windll = ctypes.windll.kernel32  # type: ignore[attr-defined]
             lang = locale.windows_locale[windll.GetUserDefaultUILanguage()]
             if lang:
-                self._sys_langs = [lang.lower()]
+                self._sys_langs = [lang]
         else:
             # check for language environment variables, but only use the first one.
             for envar in ("LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"):
                 val = os.environ.get(envar)
                 if val:
-                    self._sys_langs = val.lower().split(":")
+                    self._sys_langs = val.split(":")
                     break
         if self._show_sys_lang:
             print(f"System language code(s):  {self._sys_langs}")
@@ -216,7 +226,7 @@ class I18n:
 
         # Make sure argparser does not exit or print.
         def _error(message: str) -> NoReturn:  # type: ignore[misc]
-            log.debug("Lang Args Error:  %s", message)
+            log.debug("Lang Argument Error:  %s", message)
 
         ap.error = _error  # type: ignore[method-assign]
 
@@ -249,18 +259,18 @@ class I18n:
         )
 
         # parse the lang args.
-        args = ap.parse_args()
+        args, _ = ap.parse_known_args()
         if args.show_sys_lang:
             self._show_sys_lang = True
         if args.lang_both and args.lang_both != DEFAULT_I18N_LANG:
-            self._log_lang = args.lang_both.lower()
-            self._msg_lang = args.lang_both.lower()
+            self._log_lang = args.lang_both
+            self._msg_lang = args.lang_both
             # print(f"Lang Both:  {args.lang_both}")
         if args.lang_logs and args.lang_logs != DEFAULT_I18N_LANG:
-            self._log_lang = args.lang_logs.lower()
+            self._log_lang = args.lang_logs
             # print(f"Lang Logs:  {args.lang_logs}")
         if args.lang_msgs and args.lang_msgs != DEFAULT_I18N_LANG:
-            self._msg_lang = args.lang_msgs.lower()
+            self._msg_lang = args.lang_msgs
             # print(f"Lang Msgs:  {args.lang_msgs}")
 
     def get_log_translations(self) -> Translations:
@@ -286,19 +296,31 @@ class I18n:
 
         return t
 
-    def get_guild_translation(self, ssd: "GuildSpecificData") -> Translations:
+    def get_discord_translation(
+        self, ssd: Optional["GuildSpecificData"]
+    ) -> Translations:
         """
         Get a translation object for the given `lang` in the discord message domain.
         If the language is not available a fallback from msg_langs will be used.
         """
+        # Guild 0 is a fall-back used by non-guild messages.
+        guild_id = 0
+        if ssd:
+            guild_id = ssd.guild_id
+
         # return mapped translations, to avoid lookups.
-        if ssd.guild_id in self._discord_langs:
-            return self._discord_langs[ssd.guild_id]
+        if guild_id in self._discord_langs:
+            tl = self._discord_langs[guild_id]
+            lang_loaded = tl.info().get("language", "")
+            if ssd and lang_loaded == ssd.lang_code:
+                return tl
+            if not guild_id:
+                return tl
 
         # add selected lang as first option.
-        msg_langs = self.msg_langs
-        if ssd.lang_code:
-            msg_langs.insert(0, ssd.lang_code.lower())
+        msg_langs = list(self.msg_langs)
+        if ssd and ssd.lang_code:
+            msg_langs.insert(0, ssd.lang_code)
 
         # get the translations object.
         tl = gettext.translation(
@@ -308,13 +330,14 @@ class I18n:
             fallback=True,
         )
         # add object to the mapping.
-        self._discord_langs[ssd.guild_id] = tl
+        self._discord_langs[guild_id] = tl
 
         # warn for missing translations.
-        if isinstance(tl, gettext.NullTranslations):
+        if not isinstance(tl, gettext.GNUTranslations):
             log.warning(
-                "Failed to load discord translations for any of:  [%s]  in:  %s",
-                ", ".join(self.msg_langs),
+                "Failed to load discord translations for any of:  [%s]  guild:  %s  in:  %s",
+                ", ".join(msg_langs),
+                guild_id,
                 self._locale_dir,
             )
 
@@ -327,12 +350,12 @@ class I18n:
         if guild_id in self._discord_langs:
             del self._discord_langs[guild_id]
 
-    def sgettext(self, msg: str, ssd: "GuildSpecificData") -> str:
+    def sgettext(self, msg: str, ssd: Optional["GuildSpecificData"]) -> str:
         """
         Fetch the translation object using server specific data and provide
         gettext() call for the guild's language.
         """
-        t = self.get_guild_translation(ssd)
+        t = self.get_discord_translation(ssd)
         return t.gettext(msg)
 
     def sngettext(
@@ -342,7 +365,7 @@ class I18n:
         Fetch the translation object using server specific data and provide
         ngettext() call for the guild's language.
         """
-        t = self.get_guild_translation(ssd)
+        t = self.get_discord_translation(ssd)
         return t.ngettext(signular, plural, n)
 
     def install(self) -> None:

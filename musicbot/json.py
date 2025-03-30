@@ -11,7 +11,7 @@ class Json:
         """
         Managed JSON data, where some structure is expected.
         """
-        log.debug("Init JSON obj from file: %s", json_file)
+        log.debug("Loading JSON file: %s", json_file)
         self.file = json_file
         self.data = self.parse()
 
@@ -34,15 +34,5 @@ class Json:
             data = self.data[item]
         except KeyError:
             log.warning("Could not grab data from JSON key: %s", item)
-            data = fallback
-        return data
-
-
-class I18nJson(Json):
-    def get(self, item: str, fallback: Any = None) -> Any:
-        try:
-            data = self.data[item]
-        except KeyError:
-            log.warning("Could not grab data from i18n key: %s", item)
             data = fallback
         return data

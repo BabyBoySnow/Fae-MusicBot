@@ -88,7 +88,7 @@ persistent=yes
 
 # Minimum Python version to use for version dependent checks. Will default to
 # the version used to run pylint.
-py-version=3.8
+py-version=3.9
 
 # Discover python modules and packages in the file system subtree.
 recursive=yes
@@ -441,6 +441,7 @@ disable=raw-checker-failed,
         too-many-statements,
         too-many-return-statements,
         too-many-instance-attributes,
+        too-many-boolean-expressions,
         too-many-public-methods,
         too-few-public-methods,
         too-many-arguments,

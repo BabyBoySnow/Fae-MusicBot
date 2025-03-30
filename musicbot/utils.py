@@ -157,7 +157,6 @@ def _get_variable(name: str) -> Any:
     return None
 
 
-# TODO: Add some sort of `denied` argument for a message to send when someone else tries to use it
 def owner_only(func: Callable[..., Any]) -> Any:
     """
     Decorator function that checks the invoking message author ID matches
@@ -172,7 +171,7 @@ def owner_only(func: Callable[..., Any]) -> Any:
 
         if not orig_msg or orig_msg.author.id == self.config.owner_id:
             return await func(self, *args, **kwargs)
-        raise PermissionsError("Only the owner can use this command.", expire_in=30)
+        raise PermissionsError("Only the owner can use this command.")
 
     setattr(wrapper, "admin_only", True)
     return wrapper
@@ -192,7 +191,7 @@ def dev_only(func: Callable[..., Any]) -> Any:
 
         if orig_msg.author.id in self.config.dev_ids:
             return await func(self, *args, **kwargs)
-        raise PermissionsError("Only dev users can use this command.", expire_in=30)
+        raise PermissionsError("Only dev users can use this command.")
 
     setattr(wrapper, "dev_cmd", True)
     return wrapper
@@ -398,6 +397,9 @@ def format_size_to_bytes(size_str: str, strict_si: bool = False) -> int:
     :param: size_str:  A size notation like: 20MB or "12.3 kb"
     :param: strict_si:  Toggles use of 1000 rather than 1024 for SI suffixes.
     """
+    if not size_str:
+        return 0
+
     si_units = 1024
     if strict_si:
         si_units = 1000
@@ -445,7 +447,7 @@ def format_size_to_bytes(size_str: str, strict_si: bool = False) -> int:
     elif size_str.endswith("byte"):
         size_str = size_str[0:-4]
 
-    return int(size_str)
+    return int(float(size_str))
 
 
 def format_time_to_seconds(time_str: Union[str, int]) -> int:
@@ -510,3 +512,9 @@ def format_time_to_seconds(time_str: Union[str, int]) -> int:
             unit = unit[0].lower().strip()
         total_sec += int(float(value) * unit_seconds[unit])
     return total_sec
+
+
+def check_extractor(target: str, contains: str) -> bool:
+    """Tests extractor string for containing the given extractor parts."""
+    parts = contains.split(":")
+    return all(p in target for p in parts)
